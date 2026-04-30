@@ -1,11 +1,14 @@
+
 "use client"
 
 import { Button } from '@/components/ui/button';
-import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings } from 'lucide-react';
+import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { collection } from 'firebase/firestore';
+import { Slider } from '@/components/ui/slider';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 interface RoomSidebarProps {
   rooms: string[];
@@ -24,15 +27,21 @@ interface RoomSidebarProps {
   onToggleDeafen: () => void;
   isSpeaking?: boolean;
   onOpenSettings: () => void;
+  userVolumes: Record<string, number>;
+  onVolumeChange: (userId: string, volume: number) => void;
 }
 
-function ChannelUserList({ channelId }: { channelId: string }) {
+function ChannelUserList({ channelId, currentUserId, userVolumes, onVolumeChange }: { 
+  channelId: string, 
+  currentUserId: string,
+  userVolumes: Record<string, number>,
+  onVolumeChange: (userId: string, volume: number) => void
+}) {
   const db = useFirestore();
-  const { user } = useUser();
   const q = useMemoFirebase(() => {
-    if (!db || !user) return null;
+    if (!db) return null;
     return collection(db, 'voiceChannels', channelId, 'presence');
-  }, [db, channelId, user]);
+  }, [db, channelId]);
   
   const { data: users } = useCollection(q);
 
@@ -40,17 +49,49 @@ function ChannelUserList({ channelId }: { channelId: string }) {
 
   return (
     <div className="ml-4 space-y-0.5 mt-1">
-      {users.map((u) => (
-        <div key={u.id} className="flex items-center justify-between group/user py-0.5 px-2 rounded hover:bg-white/5 transition-colors">
-          <div className="flex items-center gap-2">
-            <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground">
-              {u.displayName.charAt(0).toUpperCase()}
+      {users.map((u) => {
+        const isMe = u.userId === currentUserId;
+        const volume = userVolumes[u.userId] ?? 100;
+
+        return (
+          <div key={u.id} className="flex items-center justify-between group/user py-0.5 px-2 rounded hover:bg-white/5 transition-colors">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground shrink-0">
+                {u.displayName.charAt(0).toUpperCase()}
+              </div>
+              <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[80px]">{u.displayName}</span>
             </div>
-            <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[100px]">{u.displayName}</span>
+            
+            <div className="flex items-center gap-1 shrink-0">
+              {u.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
+              
+              {!isMe && (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button className="text-muted-foreground hover:text-foreground transition-colors p-0.5">
+                      {volume === 0 ? <VolumeX className="w-3 h-3" /> : <Volume1 className="w-3 h-3" />}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent side="right" className="w-40 bg-card border-border p-3">
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-[10px] font-bold uppercase text-muted-foreground">
+                        <span>Ses Seviyesi</span>
+                        <span>%{volume}</span>
+                      </div>
+                      <Slider
+                        value={[volume]}
+                        max={100}
+                        step={1}
+                        onValueChange={(vals) => onVolumeChange(u.userId, vals[0])}
+                      />
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
+            </div>
           </div>
-          {u.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -61,6 +102,7 @@ export function RoomSidebar({
   activeRoom, 
   onRoomSelect, 
   userName, 
+  userId,
   onLogout,
   joinedVoiceChannel,
   onJoinVoice,
@@ -70,7 +112,9 @@ export function RoomSidebar({
   isDeafened,
   onToggleDeafen,
   isSpeaking = false,
-  onOpenSettings
+  onOpenSettings,
+  userVolumes,
+  onVolumeChange
 }: RoomSidebarProps) {
   return (
     <TooltipProvider>
@@ -120,7 +164,12 @@ export function RoomSidebar({
                     <Volume2 className={cn("w-4 h-4", joinedVoiceChannel === channel ? "text-green-500" : "text-muted-foreground group-hover:text-sidebar-foreground")} />
                     {channel}
                   </Button>
-                  <ChannelUserList channelId={channel} />
+                  <ChannelUserList 
+                    channelId={channel} 
+                    currentUserId={userId} 
+                    userVolumes={userVolumes} 
+                    onVolumeChange={onVolumeChange}
+                  />
                 </div>
               ))}
             </div>

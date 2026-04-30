@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -44,6 +45,9 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  // User Volumes State
+  const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
+
   // Audio Settings State
   const [audioSettings, setAudioSettings] = useState<AudioSettings & { outputDeviceId?: string }>({
     echoCancellation: true,
@@ -63,15 +67,44 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   // Load settings from localStorage
   useEffect(() => {
-    const saved = localStorage.getItem("kanka_audio_settings");
-    if (saved) {
+    const savedAudio = localStorage.getItem("kanka_audio_settings");
+    if (savedAudio) {
       try {
-        setAudioSettings(JSON.parse(saved));
+        setAudioSettings(JSON.parse(savedAudio));
       } catch (e) {
-        console.error("Ayarlar yüklenemedi:", e);
+        console.error("Ses ayarları yüklenemedi:", e);
+      }
+    }
+
+    const savedVolumes = localStorage.getItem("kanka_user_volumes");
+    if (savedVolumes) {
+      try {
+        setUserVolumes(JSON.parse(savedVolumes));
+      } catch (e) {
+        console.error("Ses seviyeleri yüklenemedi:", e);
       }
     }
   }, []);
+
+  const handleVolumeChange = useCallback((targetUserId: string, volume: number) => {
+    setUserVolumes(prev => {
+      const next = { ...prev, [targetUserId]: volume };
+      localStorage.setItem("kanka_user_volumes", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  // Apply volume whenever target user or volume changes
+  useEffect(() => {
+    if (remoteAudioRef.current && joinedVoiceChannel) {
+      // Find the user we are currently connected to (simplified for 1:1)
+      const targetUserInCall = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
+      if (targetUserInCall) {
+        const volume = userVolumes[targetUserInCall] ?? 100;
+        remoteAudioRef.current.volume = volume / 100;
+      }
+    }
+  }, [userVolumes, joinedVoiceChannel]);
 
   // Apply output device whenever it or the remote audio element changes
   useEffect(() => {
@@ -192,7 +225,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext) audioContext.close();
     };
-  }, [joinedVoiceChannel, isMuted, audioSettings]); // Re-init analysis when stream potentially changes
+  }, [joinedVoiceChannel, isMuted, audioSettings]);
 
   // Presence Sync
   useEffect(() => {
@@ -278,7 +311,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         document.body.appendChild(audio);
         remoteAudioRef.current = audio;
         
-        // Apply output device to the new element
         if (audioSettings.outputDeviceId) {
           setAudioOutputDevice(audio, audioSettings.outputDeviceId);
         }
@@ -286,6 +318,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       
       remoteAudioRef.current.srcObject = remoteStream;
       remoteAudioRef.current.muted = isDeafened;
+      
+      // Apply initial volume
+      const targetUserId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
+      if (targetUserId) {
+        const volume = userVolumes[targetUserId] ?? 100;
+        remoteAudioRef.current.volume = volume / 100;
+      }
+
       remoteAudioRef.current.play()
         .then(() => console.log("remote audio oynatılıyor"))
         .catch(e => console.error("remote audio oynatma hatası:", e));
@@ -296,7 +336,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
 
     return pc;
-  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, audioSettings.outputDeviceId]);
+  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, audioSettings.outputDeviceId, userVolumes]);
 
   // Signaling Flow
   useEffect(() => {
@@ -419,7 +459,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
 
-    // Pre-cleanup
     if (db && userId) {
       try {
         const callsRef = collection(db, "voiceChannels", channel, "calls");
@@ -483,6 +522,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         onToggleDeafen={toggleDeafen}
         isSpeaking={isSpeaking}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        userVolumes={userVolumes}
+        onVolumeChange={handleVolumeChange}
       />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
@@ -513,19 +554,21 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                   </h3>
                   <div className="space-y-1">
                     {joinedVoiceChannel && channelUsers ? channelUsers.map((u) => (
-                      <div key={u.id} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
-                        <div className="relative">
-                          <div className={cn(
-                            "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs transition-all duration-200",
-                            u.userId === userId && isSpeaking && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
-                          )}>
-                            {u.displayName.charAt(0).toUpperCase()}
+                      <div key={u.id} className="flex flex-col gap-1 px-2 py-2 rounded-md hover:bg-white/5 transition-colors group">
+                        <div className="flex items-center gap-3">
+                          <div className="relative">
+                            <div className={cn(
+                              "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs transition-all duration-200",
+                              u.userId === userId && isSpeaking && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
+                            )}>
+                              {u.displayName.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full" />
                           </div>
-                          <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full" />
-                        </div>
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-sm font-medium text-accent truncate">{u.displayName}</span>
-                          <span className="text-[10px] text-muted-foreground truncate leading-none">{u.isMuted ? "Susturuldu" : "Sesli"}</span>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm font-medium text-accent truncate">{u.displayName}</span>
+                            <span className="text-[10px] text-muted-foreground truncate leading-none">{u.isMuted ? "Susturuldu" : "Sesli"}</span>
+                          </div>
                         </div>
                       </div>
                     )) : (
