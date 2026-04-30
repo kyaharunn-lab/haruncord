@@ -1,7 +1,7 @@
-
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { cn } from "@/lib/utils";
 import { RoomSidebar } from './RoomSidebar';
 import { Hash, MessageSquare } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -10,6 +10,7 @@ import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebas
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer, createAnswer, setRemoteDescription, addIceCandidate } from '@/lib/webrtc';
+import { saveIceCandidate } from '@/lib/signaling';
 
 interface MainAppProps {
   userName: string;
@@ -68,7 +69,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         if (speaking !== lastSpeakState) {
           setIsSpeaking(speaking);
           lastSpeakState = speaking;
-          console.log(speaking ? "mikrofon ses algılıyor" : "mikrofon sessiz");
+          if (speaking) console.log("mikrofon ses algılıyor");
+          else console.log("mikrofon sessiz");
         }
         animationId = requestAnimationFrame(checkVolume);
       };
@@ -120,6 +122,17 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const setupPeerConnection = useCallback(() => {
     const pc = createPeerConnection();
     if (pc) {
+      pc.onconnectionstatechange = () => {
+        console.log(`peer state: ${pc.connectionState}`);
+      };
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate && db && joinedVoiceChannel) {
+          console.log('ICE gönderildi');
+          saveIceCandidate(db, joinedVoiceChannel, userId, event.candidate);
+        }
+      };
+
       pc.ontrack = (event) => {
         console.log('remote stream geldi');
         const remoteStream = event.streams[0];
@@ -128,12 +141,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           audio.srcObject = remoteStream;
           audio.autoplay = true;
           (audio as any).playsInline = true;
-          audio.play().catch(e => console.error("Uzak ses oynatılamadı:", e));
+          audio.play()
+            .then(() => console.log('remote audio oynatılıyor'))
+            .catch(e => console.error("Uzak ses oynatılamadı:", e));
         }
       };
     }
     return pc;
-  }, []);
+  }, [db, joinedVoiceChannel, userId]);
 
   // Presence sync
   useEffect(() => {
@@ -161,7 +176,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     const processOffers = async () => {
       for (const offerDoc of offers) {
         if (offerDoc.userId !== userId && !processedIdsRef.current.has(offerDoc.id)) {
-          console.log('offer bulundu:', offerDoc.displayName);
+          console.log('offer alındı:', offerDoc.displayName);
           
           if (localStreamRef.current) {
             let pc = peerConnectionRef.current;
@@ -170,12 +185,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
               peerConnectionRef.current = pc;
             }
             
-            if (pc && pc.signalingState !== 'closed') {
+            if (pc && pc.signalingState === 'stable') {
               try {
                 addLocalTracks(pc, localStreamRef.current);
                 const answer = await createAnswer(pc, offerDoc.offer);
                 if (answer) {
-                  console.log('answer hazır');
+                  console.log('answer oluşturuldu');
                   const answersRef = collection(db, 'voiceChannels', joinedVoiceChannel, 'answers');
                   addDocumentNonBlocking(answersRef, {
                     userId,
@@ -211,27 +226,23 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
       for (const answerDoc of answers) {
         if (answerDoc.targetUserId === userId) {
-          if (processedIdsRef.current.has(answerDoc.id)) {
-            continue;
-          }
+          if (processedIdsRef.current.has(answerDoc.id)) continue;
 
-          if (pc.signalingState === 'stable') {
+          if (pc.signalingState === 'have-local-offer') {
+            try {
+              console.log('answer alındı, bağlantı kuruluyor...');
+              await setRemoteDescription(pc, answerDoc.answer);
+              processedIdsRef.current.add(answerDoc.id);
+              console.log('answer uygulandı');
+              console.log('bağlantı kuruldu');
+            } catch (err) {
+              console.error('Answer uygulama hatası:', err);
+            }
+          } else if (pc.signalingState === 'stable') {
+            console.log('duplicate answer atlandı');
             processedIdsRef.current.add(answerDoc.id);
-            continue;
-          }
-
-          if (pc.signalingState !== 'have-local-offer') {
-            continue;
-          }
-
-          try {
-            console.log('answer bulundu, bağlantı kuruluyor...');
-            await setRemoteDescription(pc, answerDoc.answer);
-            processedIdsRef.current.add(answerDoc.id);
-            console.log('answer uygulandı');
-            console.log('bağlantı kuruldu');
-          } catch (err) {
-            console.error('Answer uygulama hatası:', err);
+          } else {
+            console.log(`yanlış state (${pc.signalingState}) nedeniyle answer atlandı`);
           }
         }
       }
@@ -251,9 +262,10 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       for (const candidateDoc of remoteCandidates) {
         if (candidateDoc.userId !== userId && !processedIdsRef.current.has(candidateDoc.id)) {
           try {
-            console.log('ICE eklendi');
+            console.log('ICE alındı');
             await addIceCandidate(pc, candidateDoc.candidate);
             processedIdsRef.current.add(candidateDoc.id);
+            console.log('ICE eklendi');
           } catch (err) {
             console.error('ICE adayı ekleme hatası:', err);
           }
@@ -294,7 +306,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         if (channelUsers && channelUsers.length > 1) {
           const offer = await createOffer(pc);
           if (offer) {
-            console.log('offer hazır');
+            console.log('offer oluşturuldu');
             const offersRef = collection(db, 'voiceChannels', channel, 'offers');
             addDocumentNonBlocking(offersRef, {
               userId,
