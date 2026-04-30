@@ -27,6 +27,27 @@ export async function saveAnswer(db: any, channelId: string, userId: string, tar
 }
 
 /**
+ * WebRTC ICE Candidate bilgisini Firestore'a kaydeder.
+ * @param db Firestore veritabanı örneği
+ * @param channelId Ses kanalı ID'si
+ * @param userId Adayı gönderen kullanıcı ID'si
+ * @param candidate WebRTC ICE candidate nesnesi
+ */
+export async function saveIceCandidate(db: any, channelId: string, userId: string, candidate: any) {
+  try {
+    const candidatesRef = collection(db, 'voiceChannels', channelId, 'candidates');
+    return await addDoc(candidatesRef, {
+      userId,
+      candidate: candidate.toJSON ? candidate.toJSON() : candidate,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error('ICE Candidate kaydedilirken hata oluştu:', error);
+    throw error;
+  }
+}
+
+/**
  * Sinyalleşme işlemleri için geçici placeholder fonksiyonlar.
  */
 export async function createSignal(data: any) {
