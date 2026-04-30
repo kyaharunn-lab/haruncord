@@ -44,10 +44,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // User Volumes State
   const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
-
-  // Audio Settings State
   const [audioSettings, setAudioSettings] = useState<AudioSettings & { outputDeviceId?: string }>({
     echoCancellation: true,
     noiseSuppression: true,
@@ -64,7 +61,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const { toast } = useToast();
   const db = useFirestore();
 
-  // Load settings from localStorage
   useEffect(() => {
     const savedAudio = localStorage.getItem("kanka_audio_settings");
     if (savedAudio) {
@@ -93,7 +89,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     });
   }, []);
 
-  // Apply volume whenever target user or volume changes
   useEffect(() => {
     if (remoteAudioRef.current && joinedVoiceChannel) {
       const targetUserInCall = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
@@ -104,14 +99,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
   }, [userVolumes, joinedVoiceChannel]);
 
-  // Apply output device whenever it or the remote audio element changes
   useEffect(() => {
     if (remoteAudioRef.current && audioSettings.outputDeviceId) {
       setAudioOutputDevice(remoteAudioRef.current, audioSettings.outputDeviceId);
     }
   }, [audioSettings.outputDeviceId]);
 
-  // Handle settings change
   const handleSettingsChange = useCallback(async (newSettings: AudioSettings & { outputDeviceId?: string }) => {
     setAudioSettings(newSettings);
     
@@ -131,14 +124,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           
           if (audioSender && newTrack) {
             audioSender.replaceTrack(newTrack);
-            console.log("Mikrofon stream'i başarıyla güncellendi.");
           }
         }
       }
     }
   }, [joinedVoiceChannel, isMuted]);
 
-  // Lokal Ses Efektleri
   const playSoundEffect = useCallback((type: 'join' | 'leave') => {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -170,7 +161,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
   }, []);
 
-  // Voice Activity Detection
   useEffect(() => {
     if (!localStreamRef.current || isMuted || !joinedVoiceChannel) {
       setIsSpeaking(false);
@@ -218,13 +208,11 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
   }, [joinedVoiceChannel, isMuted, audioSettings]);
 
-  // Presence Heartbeat & Cleanup
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !userId) return;
 
     const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
     
-    // Initial presence
     const updatePresence = () => {
       setDocumentNonBlocking(presenceRef, {
         userId,
@@ -237,9 +225,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
 
     updatePresence();
-    const heartbeat = setInterval(updatePresence, 10000); // 10s heartbeat
+    const heartbeat = setInterval(updatePresence, 5000); // 5s heartbeat
 
-    // Page close/refresh cleanup
     const handleUnload = () => {
       deleteDocumentNonBlocking(presenceRef);
     };
@@ -253,26 +240,22 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
   }, [db, joinedVoiceChannel, userId, userName, isMuted]);
 
-  // Channel Users (Live Collection)
   const presenceQuery = useMemoFirebase(() => {
     if (!db || !joinedVoiceChannel) return null;
     return collection(db, "voiceChannels", joinedVoiceChannel, "presence");
   }, [db, joinedVoiceChannel]);
   const { data: rawChannelUsers } = useCollection(presenceQuery);
 
-  // Filter Active Users (Local Heartbeat Check - 15 Seconds Threshold)
   const channelUsers = useMemo(() => {
     if (!rawChannelUsers) return null;
     const now = Date.now();
     return rawChannelUsers.filter(u => {
-      if (!u.lastSeen) return true;
+      if (!u.lastSeen) return false;
       const lastSeenDate = new Date(u.lastSeen);
-      // UI ONLY shows users active in last 15 seconds
       return now - lastSeenDate.getTime() < 15000;
     });
   }, [rawChannelUsers]);
 
-  // Call Management Logic
   const targetUser = useMemo(() => {
     if (!channelUsers) return null;
     return channelUsers.find(u => u.userId !== userId) || null;
@@ -303,7 +286,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: remoteCandidates } = useCollection(candidatesQuery);
 
-  // PeerConnection Setup
   const setupPeerConnection = useCallback(() => {
     const pc = createPeerConnection();
     if (!pc) return null;
@@ -316,7 +298,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           candidate: event.candidate.toJSON(),
           createdAt: serverTimestamp(),
         });
-        console.log("ICE yazıldı");
       }
     };
 
@@ -358,7 +339,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     return pc;
   }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, audioSettings.outputDeviceId, userVolumes]);
 
-  // Signaling Flow
   useEffect(() => {
     const handleSignaling = async () => {
       if (!callInfo || !callDocRef || !db) return;
@@ -408,7 +388,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     handleSignaling();
   }, [callInfo, callData, callDocRef, db, setupPeerConnection, userId]);
 
-  // ICE Candidate Processing
   useEffect(() => {
     if (!remoteCandidates || !peerConnectionRef.current) return;
     const pc = peerConnectionRef.current;
@@ -417,12 +396,10 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id)) {
         addIceCandidate(pc, doc.candidate);
         processedIceCandidatesRef.current.add(doc.id);
-        console.log("ICE alındı");
       }
     });
   }, [remoteCandidates, userId]);
 
-  // Cleanup Logic
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (joinedVoiceChannel) playSoundEffect('leave');
 

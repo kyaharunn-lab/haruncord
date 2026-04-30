@@ -1,11 +1,11 @@
-
 "use client"
 
+import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
+import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
 import { collection } from 'firebase/firestore';
 import { Slider } from '@/components/ui/slider';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -43,13 +43,23 @@ function ChannelUserList({ channelId, currentUserId, userVolumes, onVolumeChange
     return collection(db, 'voiceChannels', channelId, 'presence');
   }, [db, channelId]);
   
-  const { data: users } = useCollection(q);
+  const { data: rawUsers } = useCollection(q);
 
-  if (!users || users.length === 0) return null;
+  const activeUsers = useMemo(() => {
+    if (!rawUsers) return [];
+    const now = Date.now();
+    return rawUsers.filter(u => {
+      if (!u.lastSeen) return false;
+      const lastSeenTime = new Date(u.lastSeen).getTime();
+      return now - lastSeenTime < 15000;
+    });
+  }, [rawUsers]);
+
+  if (activeUsers.length === 0) return null;
 
   return (
     <div className="ml-4 space-y-0.5 mt-1">
-      {users.map((u) => {
+      {activeUsers.map((u) => {
         const isMe = u.userId === currentUserId;
         const volume = userVolumes[u.userId] ?? 100;
 
