@@ -1,4 +1,3 @@
-
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -55,15 +54,33 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: answers } = useCollection(answersQuery);
 
-  // Offer Detection and Answer Generation Logic
+  // Presence sync
+  useEffect(() => {
+    if (!db || !joinedVoiceChannel || !user || !userId) return;
+
+    const presenceRef = doc(db, 'voiceChannels', joinedVoiceChannel, 'presence', userId);
+    
+    setDocumentNonBlocking(presenceRef, {
+      userId,
+      displayName: userName,
+      channelId: joinedVoiceChannel,
+      joinedAt: serverTimestamp(),
+      isMuted: isMuted
+    }, { merge: true });
+
+    return () => {
+      deleteDocumentNonBlocking(presenceRef);
+    };
+  }, [db, joinedVoiceChannel, userId, userName, isMuted, user]);
+
+  // Handle Incoming Offers (Answer Generation)
   useEffect(() => {
     if (!offers || offers.length === 0 || !userId || !db || !joinedVoiceChannel) return;
 
     const processOffers = async () => {
       for (const offerDoc of offers) {
-        // Başka kullanıcının offer'ı mı?
         if (offerDoc.userId !== userId) {
-          console.log('offer bulundu:', offerDoc.displayName, offerDoc.id);
+          console.log('offer bulundu:', offerDoc.displayName);
           
           if (localStreamRef.current) {
             const pc = createPeerConnection();
@@ -72,7 +89,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
               const answer = await createAnswer(pc, offerDoc.offer);
               if (answer) {
                 console.log('answer hazır');
-                // Yanıtı Firestore'a kaydet
                 const answersRef = collection(db, 'voiceChannels', joinedVoiceChannel, 'answers');
                 addDocumentNonBlocking(answersRef, {
                   userId,
@@ -94,13 +110,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     processOffers();
   }, [offers, userId, db, joinedVoiceChannel, userName]);
 
-  // Answer Detection and Connection Completion Logic
+  // Handle Incoming Answers (Connection Completion)
   useEffect(() => {
     if (!answers || answers.length === 0 || !userId || !peerConnectionRef.current) return;
 
     const processAnswers = async () => {
       for (const answerDoc of answers) {
-        // Benim offer'ıma gelen yanıt mı?
         if (answerDoc.targetUserId === userId) {
           console.log('answer bulundu, bağlantı kuruluyor...');
           await setRemoteDescription(peerConnectionRef.current!, answerDoc.answer);
@@ -112,30 +127,11 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     processAnswers();
   }, [answers, userId]);
 
-  // Presence sync
-  useEffect(() => {
-    if (!db || !joinedVoiceChannel || !user || !userId) return;
-
-    const presenceRef = doc(db, 'voiceChannels', joinedVoiceChannel, 'presence', userId);
-    
-    setDocumentNonBlocking(presenceRef, {
-      userId,
-      displayName: userName,
-      channelId: joinedVoiceChannel,
-      joinedAt: serverTimestamp(),
-      isMuted: isMuted
-    }, { merge: true });
-
-    return () => {
-      deleteDocumentNonBlocking(presenceRef);
-    };
-  }, [db, joinedVoiceChannel, userId, userName, isMuted, user]);
-
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
     if (!db) return;
 
-    // Temizlik
+    // Cleanup
     if (peerConnectionRef.current) {
       closePeerConnection(peerConnectionRef.current);
       peerConnectionRef.current = null;
@@ -156,8 +152,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         addLocalTracks(pc, stream);
         peerConnectionRef.current = pc;
 
-        // Eğer odada başka kullanıcılar varsa offer oluştur
-        if (channelUsers && channelUsers.length > 0) {
+        // If others are in channel, create an offer
+        if (channelUsers && channelUsers.length > 1) {
           const offer = await createOffer(pc);
           if (offer) {
             console.log('offer hazır');
@@ -222,7 +218,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground font-body">
       <RoomSidebar 
         rooms={rooms} 
         voiceChannels={voiceChannels}

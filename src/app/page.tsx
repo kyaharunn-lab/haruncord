@@ -1,4 +1,3 @@
-
 "use client"
 
 import { useState, useEffect } from 'react';
@@ -30,7 +29,10 @@ export default function Home() {
 
     // Sign in anonymously to satisfy security rules
     if (auth) {
-      signInAnonymously(auth).catch(console.error);
+      signInAnonymously(auth).catch((err) => {
+        // Hata durumunda sadece konsola sessizce yazdırıyoruz
+        console.error("Anonim giriş hatası:", err);
+      });
     }
 
     setIsHydrated(true);
