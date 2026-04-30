@@ -5,6 +5,7 @@ import { RoomSidebar } from './RoomSidebar';
 import { Hash, Users, MessageSquare } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { cn } from '@/lib/utils';
 
 const SAMPLE_USERS = [
   { name: 'Arda', status: 'Sohbet ediyor', color: 'bg-red-400' },
