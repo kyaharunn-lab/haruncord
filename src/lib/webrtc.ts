@@ -10,24 +10,72 @@ export interface AudioSettings {
   autoGainControl: boolean;
 }
 
+/**
+ * Ham ses akışını Web Audio API ile işleyerek gürültü azaltma ve filtreleme uygular.
+ * Bu, Discord benzeri bir ses kalitesi elde etmek için yazılımsal bir işleme zinciri kurar.
+ */
+export const processAudioStream = (stream: MediaStream, settings: AudioSettings): MediaStream => {
+  try {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+      latencyHint: 'interactive',
+      sampleRate: 48000,
+    });
+
+    const source = audioContext.createMediaStreamSource(stream);
+    const destination = audioContext.createMediaStreamDestination();
+
+    // 1. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları (fan, klima vb.) temizler.
+    const highPass = audioContext.createBiquadFilter();
+    highPass.type = 'highpass';
+    highPass.frequency.setValueAtTime(150, audioContext.currentTime);
+    highPass.Q.setValueAtTime(0.7, audioContext.currentTime);
+
+    // 2. Peaking Filter: İnsan sesinin netliğini artırmak için 3kHz civarını hafifçe parlatır.
+    const clarityFilter = audioContext.createBiquadFilter();
+    clarityFilter.type = 'peaking';
+    clarityFilter.frequency.setValueAtTime(3000, audioContext.currentTime);
+    clarityFilter.gain.setValueAtTime(3, audioContext.currentTime);
+
+    // 3. Dynamics Compressor: Ani ses yükselmelerini engeller ve kısık sesleri dengeler.
+    const compressor = audioContext.createDynamicsCompressor();
+    compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
+    compressor.knee.setValueAtTime(30, audioContext.currentTime);
+    compressor.ratio.setValueAtTime(12, audioContext.currentTime);
+    compressor.attack.setValueAtTime(0.003, audioContext.currentTime);
+    compressor.release.setValueAtTime(0.25, audioContext.currentTime);
+
+    // Zinciri oluştur: Source -> HighPass -> Clarity -> Compressor -> Destination
+    source.connect(highPass);
+    highPass.connect(clarityFilter);
+    clarityFilter.connect(compressor);
+    compressor.connect(destination);
+
+    // İşlenmiş akışı döndür
+    return destination.stream;
+  } catch (error) {
+    console.error("Ses işleme zinciri kurulamadı, ham ses kullanılıyor:", error);
+    return stream;
+  }
+};
+
 export const getLocalAudioStream = async (settings?: AudioSettings): Promise<MediaStream | null> => {
   try {
-    // Daha yüksek ses kalitesi için gelişmiş kısıtlamalar
     const audioConstraints: any = {
       deviceId: settings?.deviceId ? { exact: settings.deviceId } : undefined,
       echoCancellation: settings?.echoCancellation ?? true,
       noiseSuppression: settings?.noiseSuppression ?? true,
       autoGainControl: settings?.autoGainControl ?? true,
-      sampleRate: 48000, // 48kHz stüdyo kalitesi
-      channelCount: 1,   // Mono ses (sesli sohbet için ideal)
-      latency: 0,        // En düşük gecikme hedefi
+      sampleRate: 48000,
+      channelCount: 1,
+      latency: 0,
       
-      // Chromium tabanlı tarayıcılar için özel ses iyileştirme ayarları
+      // Donanımsal hızlandırma ve özel algoritmalar
       googEchoCancellation: true,
       googAutoGainControl: true,
       googNoiseSuppression: true,
       googHighpassFilter: true,
       googTypingNoiseDetection: true,
+      googAudioMirroring: false,
     };
 
     const constraints: MediaStreamConstraints = {
@@ -35,8 +83,15 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
       video: false,
     };
 
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    return stream;
+    const rawStream = await navigator.mediaDevices.getUserMedia(constraints);
+    
+    // Eğer ayarlar uygunsa ses işleme zincirini uygula
+    if (rawStream && settings) {
+      console.log("Gelişmiş ses işleme zinciri aktif edildi.");
+      return processAudioStream(rawStream, settings);
+    }
+
+    return rawStream;
   } catch (error) {
     console.error("Mikrofon erişimi sırasında hata oluştu:", error);
     return null;
@@ -46,7 +101,11 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
 export const createPeerConnection = (): RTCPeerConnection | null => {
   try {
     return new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+      ],
+      iceCandidatePoolSize: 10,
     });
   } catch (error) {
     console.error("PeerConnection oluşturulurken hata oluştu:", error);
@@ -81,7 +140,9 @@ export const createOffer = async (
   pc: RTCPeerConnection
 ): Promise<RTCSessionDescriptionInit | null> => {
   try {
-    const offer = await pc.createOffer();
+    const offer = await pc.createOffer({
+      offerToReceiveAudio: true,
+    });
     await pc.setLocalDescription(offer);
     console.log("Offer oluşturuldu.");
     return offer;
