@@ -10,6 +10,7 @@ import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebas
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { cn } from '@/lib/utils';
+import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection } from '@/lib/webrtc';
 
 interface MainAppProps {
   userName: string;
@@ -26,6 +27,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [isMuted, setIsMuted] = useState(false);
   
   const localStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const { toast } = useToast();
   const db = useFirestore();
   const { user } = useUser();
@@ -49,9 +51,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
   }, [db, joinedVoiceChannel, userId, userName, isMuted, user]);
 
-  // Since we can't easily map useCollection in a loop due to hooks rules,
-  // we use the joined channel's presence for the right sidebar.
-  // The individual channel users are listed in the Sidebar component's own hooks.
   const activePresenceQuery = useMemoFirebase(() => {
     if (!db || !joinedVoiceChannel || !user) return null;
     return collection(db, 'voiceChannels', joinedVoiceChannel, 'presence');
@@ -62,18 +61,30 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
 
-    // Stop current stream if switching
+    // Temizlik: Mevcut bağlantıları ve stream'i kapat
+    if (peerConnectionRef.current) {
+      closePeerConnection(peerConnectionRef.current);
+      peerConnectionRef.current = null;
+    }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, 
-        video: false 
-      });
+      // Mikrofon akışını al
+      const stream = await getLocalAudioStream();
+      if (!stream) throw new Error("Mikrofon akışı alınamadı.");
       
       localStreamRef.current = stream;
+      
+      // Peer Connection oluştur ve yerel trackleri ekle
+      const pc = createPeerConnection();
+      if (pc) {
+        addLocalTracks(pc, stream);
+        peerConnectionRef.current = pc;
+      }
+      
       setJoinedVoiceChannel(channel);
       setIsMuted(false);
       
@@ -82,16 +93,20 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         description: `${channel} kanalına bağlandınız.`,
       });
     } catch (error) {
-      console.error('Microphone access denied:', error);
+      console.error('Ses bağlantı hatası:', error);
       toast({
         variant: 'destructive',
-        title: 'Mikrofon Erişimi Reddedildi',
+        title: 'Bağlantı Hatası',
         description: 'Sesli kanala katılmak için mikrofon izni vermeniz gerekiyor.',
       });
     }
   }, [toast, joinedVoiceChannel]);
 
   const handleLeaveVoiceChannel = useCallback(() => {
+    if (peerConnectionRef.current) {
+      closePeerConnection(peerConnectionRef.current);
+      peerConnectionRef.current = null;
+    }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
@@ -111,6 +126,9 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   useEffect(() => {
     return () => {
+      if (peerConnectionRef.current) {
+        closePeerConnection(peerConnectionRef.current);
+      }
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => track.stop());
       }
@@ -162,18 +180,18 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                   </h3>
                   <div className="space-y-1">
                     {joinedVoiceChannel && channelUsers ? (
-                      channelUsers.map((user) => (
-                        <div key={user.userId} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
+                      channelUsers.map((u) => (
+                        <div key={u.userId} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
                           <div className="relative">
                             <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold">
-                              {user.displayName.charAt(0).toUpperCase()}
+                              {u.displayName.charAt(0).toUpperCase()}
                             </div>
                             <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full"></div>
                           </div>
                           <div className="flex flex-col min-w-0">
-                            <span className="text-sm font-medium text-accent truncate">{user.displayName}</span>
+                            <span className="text-sm font-medium text-accent truncate">{u.displayName}</span>
                             <span className="text-[10px] text-muted-foreground truncate leading-none">
-                              {user.isMuted ? 'Susturuldu' : 'Sesli'}
+                              {u.isMuted ? 'Susturuldu' : 'Sesli'}
                             </span>
                           </div>
                         </div>
