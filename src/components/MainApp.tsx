@@ -9,7 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
-import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer, createAnswer } from '@/lib/webrtc';
+import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer, createAnswer, setRemoteDescription } from '@/lib/webrtc';
 
 interface MainAppProps {
   userName: string;
@@ -47,6 +47,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: offers } = useCollection(offersQuery);
 
+  // Answers Query (Signaling)
+  const answersQuery = useMemoFirebase(() => {
+    if (!db || !joinedVoiceChannel || !user) return null;
+    return collection(db, 'voiceChannels', joinedVoiceChannel, 'answers');
+  }, [db, joinedVoiceChannel, user]);
+
+  const { data: answers } = useCollection(answersQuery);
+
   // Offer Detection and Answer Generation Logic
   useEffect(() => {
     if (!offers || offers.length === 0 || !userId || !db || !joinedVoiceChannel) return;
@@ -57,15 +65,25 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         if (offerDoc.userId !== userId) {
           console.log('offer bulundu:', offerDoc.displayName, offerDoc.id);
           
-          // Eğer sesli kanaldaysak (stream varsa) yanıt ver
           if (localStreamRef.current) {
             const pc = createPeerConnection();
             if (pc) {
               addLocalTracks(pc, localStreamRef.current);
-              // Answer oluştur (helper setRemoteDescription ve setLocalDescription yapıyor)
               const answer = await createAnswer(pc, offerDoc.offer);
               if (answer) {
                 console.log('answer hazır');
+                // Yanıtı Firestore'a kaydet
+                const answersRef = collection(db, 'voiceChannels', joinedVoiceChannel, 'answers');
+                addDocumentNonBlocking(answersRef, {
+                  userId,
+                  targetUserId: offerDoc.userId,
+                  displayName: userName,
+                  answer: {
+                    type: answer.type,
+                    sdp: answer.sdp
+                  },
+                  createdAt: serverTimestamp()
+                });
               }
             }
           }
@@ -74,7 +92,25 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
 
     processOffers();
-  }, [offers, userId, db, joinedVoiceChannel]);
+  }, [offers, userId, db, joinedVoiceChannel, userName]);
+
+  // Answer Detection and Connection Completion Logic
+  useEffect(() => {
+    if (!answers || answers.length === 0 || !userId || !peerConnectionRef.current) return;
+
+    const processAnswers = async () => {
+      for (const answerDoc of answers) {
+        // Benim offer'ıma gelen yanıt mı?
+        if (answerDoc.targetUserId === userId) {
+          console.log('answer bulundu, bağlantı kuruluyor...');
+          await setRemoteDescription(peerConnectionRef.current!, answerDoc.answer);
+          console.log('bağlantı kuruldu');
+        }
+      }
+    };
+
+    processAnswers();
+  }, [answers, userId]);
 
   // Presence sync
   useEffect(() => {

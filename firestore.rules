@@ -19,8 +19,13 @@ service cloud.firestore {
         allow read, write: if true;
       }
 
-      // WebRTC Offers (Basit havuz sistemi)
+      // WebRTC Offers
       match /offers/{offerId} {
+        allow read, write: if true;
+      }
+
+      // WebRTC Answers
+      match /answers/{answerId} {
         allow read, write: if true;
       }
 
