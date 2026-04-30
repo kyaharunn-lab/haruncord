@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { RoomSidebar } from "./RoomSidebar";
-import { Hash, MessageSquare, Plus, Trash2, Monitor, X } from "lucide-react";
+import { Hash, MessageSquare, Plus, Trash2, Monitor, X, MicOff, Video, User } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -26,7 +26,6 @@ import {
   createAnswer,
   setRemoteDescription,
   addIceCandidate,
-  setAudioOutputDevice,
   type AudioSettings,
 } from "@/lib/webrtc";
 import { AudioSettingsDialog } from "./AudioSettingsDialog";
@@ -41,7 +40,7 @@ interface MainAppProps {
 }
 
 export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) {
-  const [activeRoom, setActiveRoom] = useState("Genel");
+  const [activeView, setActiveView] = useState<{ type: 'text' | 'voice', id: string }>({ type: 'text', id: 'Genel' });
   const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
@@ -120,7 +119,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (!db || userRole !== 'admin') return;
     try {
       await deleteDoc(doc(db, type === "text" ? "textChannels" : "voiceChannels", id));
-      if (type === "text" && activeRoom === id) setActiveRoom("Genel");
+      if (type === "text" && activeView.id === id) setActiveView({ type: 'text', id: 'Genel' });
       if (type === "voice" && joinedVoiceChannel === id) handleLeaveVoiceChannel();
       toast({ title: "Kanal Silindi", description: `${id} başarıyla kaldırıldı.` });
     } catch (e) {
@@ -130,13 +129,13 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   // --- Mesajlaşma Mantığı ---
   const messagesQuery = useMemoFirebase(() => {
-    if (!db || !activeRoom) return null;
+    if (!db || activeView.type !== 'text') return null;
     return query(
-      collection(db, "textChannels", activeRoom, "messages"),
+      collection(db, "textChannels", activeView.id, "messages"),
       orderBy("createdAt", "asc"),
       limit(50)
     );
-  }, [db, activeRoom]);
+  }, [db, activeView]);
 
   const { data: messages } = useCollection(messagesQuery);
 
@@ -148,9 +147,9 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageText.trim() || !db || !activeRoom) return;
+    if (!messageText.trim() || !db || activeView.type !== 'text') return;
 
-    const messagesRef = collection(db, "textChannels", activeRoom, "messages");
+    const messagesRef = collection(db, "textChannels", activeView.id, "messages");
     addDocumentNonBlocking(messagesRef, {
       text: messageText.trim(),
       userId,
@@ -284,6 +283,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         isMuted, 
         id: userId,
         isSharingScreen: isScreenSharing,
+        isSpeaking: isSpeaking, // Konuşma durumunu presence'a ekle
       }, { merge: true });
     };
     updatePresence();
@@ -292,7 +292,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       clearInterval(heartbeat);
       deleteDocumentNonBlocking(presenceRef);
     };
-  }, [db, joinedVoiceChannel, userId, userName, isMuted, isScreenSharing]);
+  }, [db, joinedVoiceChannel, userId, userName, isMuted, isScreenSharing, isSpeaking]);
 
   const presenceQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
   const { data: rawChannelUsers } = useCollection(presenceQuery);
@@ -301,6 +301,15 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     const now = Date.now();
     return rawChannelUsers.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
   }, [rawChannelUsers]);
+
+  // Görünümdeki ses kanalındaki kullanıcılar
+  const viewPresenceQuery = useMemoFirebase(() => db && activeView.type === 'voice' ? collection(db, "voiceChannels", activeView.id, "presence") : null, [db, activeView]);
+  const { data: rawViewUsers } = useCollection(viewPresenceQuery);
+  const viewUsers = useMemo(() => {
+    if (!rawViewUsers) return [];
+    const now = Date.now();
+    return rawViewUsers.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
+  }, [rawViewUsers]);
 
   const targetUser = useMemo(() => channelUsers?.find(u => u.userId !== userId) || null, [channelUsers, userId]);
 
@@ -411,6 +420,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
+    setActiveView({ type: 'voice', id: channel });
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
     try {
@@ -452,14 +462,14 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   };
 
   const handleKickUser = useCallback((targetId: string) => {
-    if (!db || !joinedVoiceChannel || (userRole !== 'admin' && userRole !== 'mod')) return;
-    setDocumentNonBlocking(doc(db, "voiceChannels", joinedVoiceChannel, "presence", targetId), { isKicked: true }, { merge: true });
+    if (!db || !activeView.id || (userRole !== 'admin' && userRole !== 'mod')) return;
+    setDocumentNonBlocking(doc(db, "voiceChannels", activeView.id, "presence", targetId), { isKicked: true }, { merge: true });
     toast({ title: "Kullanıcı Atıldı", description: "Kullanıcı ses kanalından çıkarıldı." });
-  }, [db, joinedVoiceChannel, toast, userRole]);
+  }, [db, activeView, toast, userRole]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground relative">
-      {/* Oyun Modu Overlay */}
+      {/* Oyun Modu Overlay (Sadece kanala bağlıyken görünür) */}
       {joinedVoiceChannel && (
         <div className="absolute top-4 right-4 z-50 pointer-events-none">
           <div className="bg-black/40 backdrop-blur-md rounded-xl p-3 border border-white/10 shadow-2xl min-w-[160px]">
@@ -511,8 +521,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       <RoomSidebar
         rooms={rooms}
         voiceChannels={voiceChannels}
-        activeRoom={activeRoom}
-        onRoomSelect={setActiveRoom}
+        activeRoom={activeView.id}
+        onRoomSelect={(id) => setActiveView({ type: 'text', id })}
         userName={userName}
         userId={userId}
         userRole={userRole}
@@ -538,41 +548,88 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
         <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 bg-card/20">
           <div className="flex items-center gap-2 font-semibold">
-            <Hash className="w-5 h-5 text-muted-foreground" />
-            <span>{activeRoom}</span>
+            {activeView.type === 'text' ? <Hash className="w-5 h-5 text-muted-foreground" /> : <Video className="w-5 h-5 text-muted-foreground" />}
+            <span>{activeView.id}</span>
           </div>
         </header>
 
-        <div className="flex-1 flex flex-col relative overflow-hidden">
-          <ScrollArea className="flex-1 p-4">
-            <div className="space-y-4 pb-4">
-              {messages?.map((msg) => (
-                <div key={msg.id} className="group flex flex-col gap-1 hover:bg-black/5 p-2 rounded-md">
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-bold text-accent text-sm">{msg.displayName}</span>
-                    <span className="text-[10px] text-muted-foreground">{msg.createdAt?.toDate?.().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || '...'}</span>
+        {activeView.type === 'text' ? (
+          <div className="flex-1 flex flex-col relative overflow-hidden">
+            <ScrollArea className="flex-1 p-4">
+              <div className="space-y-4 pb-4">
+                {messages?.map((msg) => (
+                  <div key={msg.id} className="group flex flex-col gap-1 hover:bg-black/5 p-2 rounded-md">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-bold text-accent text-sm">{msg.displayName}</span>
+                      <span className="text-[10px] text-muted-foreground">{msg.createdAt?.toDate?.().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || '...'}</span>
+                    </div>
+                    <p className="text-sm text-foreground/90 break-words">{msg.text}</p>
                   </div>
-                  <p className="text-sm text-foreground/90 break-words">{msg.text}</p>
-                </div>
-              ))}
-              <div ref={scrollRef} />
-            </div>
-          </ScrollArea>
+                ))}
+                <div ref={scrollRef} />
+              </div>
+            </ScrollArea>
 
-          <form onSubmit={handleSendMessage} className="p-4 shrink-0">
-            <div className="relative">
-              <Input
-                value={messageText}
-                onChange={(e) => setMessageText(e.target.value)}
-                placeholder={`#${activeRoom} kanalına mesaj gönder`}
-                className="w-full bg-black/20 border-none h-11 pr-12"
-              />
-              <Button type="submit" size="icon" variant="ghost" className="absolute right-1 top-1 h-9 w-9" disabled={!messageText.trim()}>
-                <MessageSquare className="w-5 h-5" />
-              </Button>
-            </div>
-          </form>
-        </div>
+            <form onSubmit={handleSendMessage} className="p-4 shrink-0">
+              <div className="relative">
+                <Input
+                  value={messageText}
+                  onChange={(e) => setMessageText(e.target.value)}
+                  placeholder={`#${activeView.id} kanalına mesaj gönder`}
+                  className="w-full bg-black/20 border-none h-11 pr-12"
+                />
+                <Button type="submit" size="icon" variant="ghost" className="absolute right-1 top-1 h-9 w-9" disabled={!messageText.trim()}>
+                  <MessageSquare className="w-5 h-5" />
+                </Button>
+              </div>
+            </form>
+          </div>
+        ) : (
+          <div className="flex-1 bg-[#1E1F22] p-6 overflow-hidden flex flex-col">
+            {viewUsers.length === 0 ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 opacity-40">
+                <div className="w-24 h-24 bg-muted rounded-full flex items-center justify-center">
+                  <User className="w-12 h-12" />
+                </div>
+                <p className="text-xl font-medium">Bu ses kanalında kimse yok.</p>
+              </div>
+            ) : (
+              <div className={cn(
+                "flex-1 grid gap-4 items-center justify-center content-center",
+                viewUsers.length === 1 ? "grid-cols-1 max-w-2xl mx-auto w-full" : 
+                viewUsers.length === 2 ? "grid-cols-2 max-w-5xl mx-auto w-full" : 
+                "grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 w-full"
+              )}>
+                {viewUsers.map((u) => {
+                  const isUserSpeaking = u.isSpeaking;
+                  return (
+                    <div key={u.id} className={cn(
+                      "aspect-video bg-[#2B2D31] rounded-2xl flex flex-col items-center justify-center relative shadow-xl transition-all border-4",
+                      isUserSpeaking ? "border-green-500 scale-[1.02]" : "border-transparent"
+                    )}>
+                      <div className="w-24 h-24 rounded-full bg-primary flex items-center justify-center text-3xl font-bold shadow-2xl">
+                        {u.displayName.charAt(0)}
+                      </div>
+                      <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-black/40 backdrop-blur px-3 py-1.5 rounded-full">
+                        <span className="text-sm font-bold text-white">{u.displayName}</span>
+                        {u.isMuted && <MicOff className="w-3.5 h-3.5 text-destructive" />}
+                        {u.isSharingScreen && (
+                          <span className="bg-primary/20 text-primary text-[10px] font-black px-2 py-0.5 rounded leading-none uppercase border border-primary/30 flex items-center gap-1">
+                            <Monitor className="w-2.5 h-2.5" />
+                            Yayında
+                          </span>
+                        )}
+                      </div>
+                      {isUserSpeaking && (
+                        <div className="absolute inset-0 rounded-2xl ring-4 ring-green-500/30 animate-pulse pointer-events-none" />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
       <AudioSettingsDialog isOpen={isSettingsOpen} onOpenChange={setIsSettingsOpen} settings={audioSettings} onSettingsChange={handleSettingsChange} />

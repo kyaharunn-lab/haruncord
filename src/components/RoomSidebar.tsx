@@ -170,7 +170,7 @@ export function RoomSidebar({
                       onClick={() => onJoinVoice(channel)}
                       className={cn(
                         "w-full justify-start gap-2 h-9 px-2 font-medium transition-all",
-                        joinedVoiceChannel === channel ? "text-sidebar-accent-foreground bg-sidebar-accent/20" : "text-muted-foreground hover:bg-sidebar-accent/50"
+                        joinedVoiceChannel === channel || activeRoom === channel ? "text-sidebar-accent-foreground bg-sidebar-accent/20" : "text-muted-foreground hover:bg-sidebar-accent/50"
                       )}
                     >
                       <Volume2 className={cn("w-4 h-4", joinedVoiceChannel === channel ? "text-green-500" : "text-muted-foreground")} />
