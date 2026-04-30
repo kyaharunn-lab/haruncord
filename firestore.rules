@@ -3,101 +3,42 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     /**
-     * CORE PHILOSOPHY
-     * This ruleset implements a decentralized signaling and presence model for WebRTC-based voice chat.
-     * Since the application utilizes "Anonymous Auth" as indicated in the IR, security is anchored
-     * to the `request.auth.uid`. This UID is treated as the source of truth for user identity.
-     *
-     * DATA STRUCTURE
-     * 1. /voiceChannels/{channelId} - Public, static metadata for channels.
-     * 2. /voiceChannels/{channelId}/presence/{userId} - Ephemeral presence tracking for active users.
-     * 3. /voiceChannels/{channelId}/users/{receiverId}/webrtcSignals/{signalId} - A "mailbox" system
-     *    where users can send/receive WebRTC negotiation data (offers, answers, ICE candidates).
-     *
-     * KEY SECURITY DECISIONS
-     * - Presence Ownership: Users can only create or update presence records matching their own UID.
-     * - Mailbox Privacy: WebRTC signals are stored in a path containing the receiver's UID. Only the 
-     *   intended recipient can read or list signals in their mailbox.
-     * - Sender Integrity: While anyone can send a signal to another user's mailbox, the rules 
-     *   enforce that the `senderUserId` field must match the sender's actual UID to prevent spoofing.
-     * - Global Read: Voice channels and presence lists are publicly readable to facilitate discovery 
-     *   and real-time UI updates of who is in a room.
+     * GELİŞTİRME MODU GÜVENLİK KURALLARI
+     * UYARI: Bu kurallar herkese açık okuma ve yazma izni verir.
+     * Firebase Auth kullanılmayan MVP geliştirme aşaması için tasarlanmıştır.
+     * Üretim ortamına geçmeden önce bu kurallar request.auth kontrolü ile sıkılaştırılmalıdır.
      */
 
-    // --- Helper Functions ---
-
-    /** 
-     * @description Basic check to ensure the request is from an authenticated user.
-     */
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    /** 
-     * @description Checks if the provided ID matches the authenticated user's UID.
-     * @param userId The UID to verify against the session.
-     */
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    /** 
-     * @description Combines ownership check with existence check for updates and deletes.
-     * @param userId The UID to verify.
-     */
-    function isExistingOwner(userId) {
-      return resource != null && isOwner(userId);
-    }
-
-    // --- Collection Rules ---
-
-    /**
-     * @description Static voice channels used as gathering points.
-     * @path /voiceChannels/{voiceChannelId}
-     * @allow (get, list) Always permitted for channel discovery.
-     * @deny (create, update, delete) Denied for all users; channels are system-defined.
-     * @principle Public discovery with restricted administrative writes.
-     */
+    // Ses Kanalları ve Varlık (Presence) Sistemi
     match /voiceChannels/{voiceChannelId} {
-      allow get, list: if true;
-      allow create, update, delete: if false;
+      // Kanalların listelenmesine herkes izin verilir
+      allow read: if true;
+      // Kanal tanımlarının kendisi (static metadata) değiştirilemez
+      allow write: if false;
 
-      /**
-       * @description User presence records within a specific voice channel.
-       * @path /voiceChannels/{voiceChannelId}/presence/{userId}
-       * @allow (create) If the userId in the path and data matches the authenticated user.
-       * @allow (list) If the user is signed in, to see who else is in the room.
-       * @deny (update) If attempting to change the userId or channelId (relational integrity).
-       * @principle Enforces document ownership for presence management.
-       */
+      // Kullanıcı varlık kayıtları (Kimin hangi odada olduğu)
       match /presence/{userId} {
-        allow get, list: if isSignedIn();
-        allow create: if isOwner(userId) && request.resource.data.userId == userId && request.resource.data.voiceChannelId == voiceChannelId;
-        allow update: if isExistingOwner(userId) && request.resource.data.userId == resource.data.userId && request.resource.data.voiceChannelId == resource.data.voiceChannelId;
-        allow delete: if isExistingOwner(userId);
+        // MVP aşamasında herkesin odadaki diğerlerini görmesine ve kendi kaydını yönetmesine izin verilir
+        allow read, write: if true;
       }
 
-      /**
-       * @description WebRTC signaling mailbox for a specific recipient.
-       * @path /voiceChannels/{voiceChannelId}/users/{receiverUserId}/webrtcSignals/{signalId}
-       * @allow (create) Any signed-in user can send a signal, provided they identify as themselves.
-       * @allow (get, list) Only the receiver identified in the path can read their own signals.
-       * @deny (update) Signals are immutable once sent to ensure negotiation consistency.
-       * @principle Secure mailbox pattern for peer-to-peer signaling.
-       */
+      // WebRTC Sinyalleşme Kutuları (Gelecekteki P2P bağlantıları için)
       match /users/{receiverUserId}/webrtcSignals/{signalId} {
-        // Only the receiver can read signals sent to them
-        allow get, list: if isOwner(receiverUserId);
-        
-        // Anyone can create a signal for someone else, but they must identify as the sender
-        allow create: if isSignedIn() && request.resource.data.senderUserId == request.auth.uid && request.resource.data.receiverUserId == receiverUserId;
-        
-        // Signals are transient and should not be modified
-        allow update: if false;
-        
-        // The receiver cleans up their own signals after consumption
-        allow delete: if isExistingOwner(receiverUserId);
+        allow read, write: if true;
       }
+    }
+
+    // Gelecekte eklenebilecek odalar ve mesajlar için genel izinler
+    match /rooms/{roomId} {
+      allow read, write: if true;
+    }
+    
+    match /messages/{messageId} {
+      allow read, write: if true;
+    }
+    
+    match /users/{userId} {
+      allow read, write: if true;
     }
   }
 }
