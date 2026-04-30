@@ -26,6 +26,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   
   const localStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const processedIdsRef = useRef<Set<string>>(new Set());
   const { toast } = useToast();
   const db = useFirestore();
   const { user } = useUser();
@@ -67,12 +68,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     const pc = createPeerConnection();
     if (pc) {
       pc.ontrack = (event) => {
-        console.log('Uzak ses akışı alındı');
+        console.log('remote stream geldi');
         const remoteStream = event.streams[0];
         if (remoteStream) {
           const audio = new Audio();
           audio.srcObject = remoteStream;
           audio.autoplay = true;
+          (audio as any).playsInline = true;
           audio.play().catch(e => console.error("Uzak ses oynatılamadı:", e));
         }
       };
@@ -105,7 +107,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
     const processOffers = async () => {
       for (const offerDoc of offers) {
-        if (offerDoc.userId !== userId) {
+        if (offerDoc.userId !== userId && !processedIdsRef.current.has(offerDoc.id)) {
           console.log('offer bulundu:', offerDoc.displayName);
           
           if (localStreamRef.current) {
@@ -115,22 +117,27 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
               peerConnectionRef.current = pc;
             }
             
-            if (pc) {
-              addLocalTracks(pc, localStreamRef.current);
-              const answer = await createAnswer(pc, offerDoc.offer);
-              if (answer) {
-                console.log('answer hazır');
-                const answersRef = collection(db, 'voiceChannels', joinedVoiceChannel, 'answers');
-                addDocumentNonBlocking(answersRef, {
-                  userId,
-                  targetUserId: offerDoc.userId,
-                  displayName: userName,
-                  answer: {
-                    type: answer.type,
-                    sdp: answer.sdp
-                  },
-                  createdAt: serverTimestamp()
-                });
+            if (pc && pc.signalingState !== 'closed') {
+              try {
+                addLocalTracks(pc, localStreamRef.current);
+                const answer = await createAnswer(pc, offerDoc.offer);
+                if (answer) {
+                  console.log('answer hazır');
+                  const answersRef = collection(db, 'voiceChannels', joinedVoiceChannel, 'answers');
+                  addDocumentNonBlocking(answersRef, {
+                    userId,
+                    targetUserId: offerDoc.userId,
+                    displayName: userName,
+                    answer: {
+                      type: answer.type,
+                      sdp: answer.sdp
+                    },
+                    createdAt: serverTimestamp()
+                  });
+                  processedIdsRef.current.add(offerDoc.id);
+                }
+              } catch (err) {
+                console.error('Offer işleme hatası:', err);
               }
             }
           }
@@ -146,11 +153,36 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     if (!answers || answers.length === 0 || !userId || !peerConnectionRef.current) return;
 
     const processAnswers = async () => {
+      const pc = peerConnectionRef.current;
+      if (!pc) return;
+
       for (const answerDoc of answers) {
         if (answerDoc.targetUserId === userId) {
-          console.log('answer bulundu, bağlantı kuruluyor...');
-          await setRemoteDescription(peerConnectionRef.current!, answerDoc.answer);
-          console.log('bağlantı kuruldu');
+          if (processedIdsRef.current.has(answerDoc.id)) {
+            console.log('duplicate answer atlandı');
+            continue;
+          }
+
+          if (pc.signalingState === 'stable') {
+            console.log('duplicate answer atlandı');
+            processedIdsRef.current.add(answerDoc.id);
+            continue;
+          }
+
+          if (pc.signalingState !== 'have-local-offer') {
+            console.log('yanlış state nedeniyle answer atlandı');
+            continue;
+          }
+
+          try {
+            console.log('answer bulundu, bağlantı kuruluyor...');
+            await setRemoteDescription(pc, answerDoc.answer);
+            processedIdsRef.current.add(answerDoc.id);
+            console.log('answer uygulandı');
+            console.log('bağlantı kuruldu');
+          } catch (err) {
+            console.error('Answer uygulama hatası:', err);
+          }
         }
       }
     };
@@ -163,10 +195,18 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     if (!remoteCandidates || remoteCandidates.length === 0 || !userId || !peerConnectionRef.current) return;
 
     const processCandidates = async () => {
+      const pc = peerConnectionRef.current;
+      if (!pc || !pc.remoteDescription) return;
+
       for (const candidateDoc of remoteCandidates) {
-        if (candidateDoc.userId !== userId) {
-          console.log('ICE eklendi');
-          await addIceCandidate(peerConnectionRef.current!, candidateDoc.candidate);
+        if (candidateDoc.userId !== userId && !processedIdsRef.current.has(candidateDoc.id)) {
+          try {
+            console.log('ICE eklendi');
+            await addIceCandidate(pc, candidateDoc.candidate);
+            processedIdsRef.current.add(candidateDoc.id);
+          } catch (err) {
+            console.error('ICE adayı ekleme hatası:', err);
+          }
         }
       }
     };
@@ -187,6 +227,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
     }
+    processedIdsRef.current.clear();
 
     try {
       const stream = await getLocalAudioStream();
@@ -244,6 +285,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
     }
+    processedIdsRef.current.clear();
     setJoinedVoiceChannel(null);
   }, []);
 
