@@ -3,17 +3,26 @@
  * Bu dosya temel bağlantı ve medya yönetimi işlemlerini içerir.
  */
 
-export const getLocalAudioStream = async (): Promise<MediaStream | null> => {
+export interface AudioSettings {
+  deviceId?: string;
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+}
+
+export const getLocalAudioStream = async (settings?: AudioSettings): Promise<MediaStream | null> => {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const constraints: MediaStreamConstraints = {
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        deviceId: settings?.deviceId ? { exact: settings.deviceId } : undefined,
+        echoCancellation: settings?.echoCancellation ?? true,
+        noiseSuppression: settings?.noiseSuppression ?? true,
+        autoGainControl: settings?.autoGainControl ?? true,
       },
       video: false,
-    });
+    };
 
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
     return stream;
   } catch (error) {
     console.error("Mikrofon erişimi sırasında hata oluştu:", error);
@@ -140,59 +149,6 @@ export const addIceCandidate = async (
   }
 };
 
-export const collectIceCandidates = (
-  pc: RTCPeerConnection,
-  onCandidate: (candidate: RTCIceCandidate | null) => void
-): void => {
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      console.log("ICE candidate bulundu.");
-      onCandidate(event.candidate);
-    }
-  };
-};
-
-export const attachRemoteAudio = (
-  pc: RTCPeerConnection,
-  remoteUserId: string
-): void => {
-  pc.ontrack = (event) => {
-    console.log("Remote stream geldi:", remoteUserId);
-
-    const stream = event.streams[0];
-    if (!stream) return;
-
-    let audio = document.getElementById(
-      `remote-audio-${remoteUserId}`
-    ) as HTMLAudioElement | null;
-
-    if (!audio) {
-      audio = document.createElement("audio");
-      audio.id = `remote-audio-${remoteUserId}`;
-      audio.autoplay = true;
-      audio.playsInline = true;
-      audio.style.display = "none";
-      document.body.appendChild(audio);
-    }
-
-    audio.srcObject = stream;
-
-    audio.play().catch((error) => {
-      console.error("Remote audio çalınırken hata oluştu:", error);
-    });
-  };
-};
-
-export const createTestOffer = async (): Promise<RTCSessionDescriptionInit | null> => {
-  const pc = createPeerConnection();
-  if (!pc) return null;
-
-  const offer = await createOffer(pc);
-  closePeerConnection(pc);
-
-  return offer;
-};
-
 export const closePeerConnection = (pc: RTCPeerConnection | null): void => {
   if (!pc) return;
 
@@ -220,5 +176,23 @@ export const closePeerConnection = (pc: RTCPeerConnection | null): void => {
     console.log("PeerConnection kapatıldı.");
   } catch (error) {
     console.error("Bağlantı kapatılırken hata oluştu:", error);
+  }
+};
+
+export const setAudioOutputDevice = async (
+  element: HTMLAudioElement | null,
+  deviceId: string
+): Promise<void> => {
+  if (!element || !deviceId) return;
+  
+  if ('setSinkId' in element) {
+    try {
+      await (element as any).setSinkId(deviceId);
+      console.log("Hoparlör çıkışı değiştirildi:", deviceId);
+    } catch (error) {
+      console.error("Hoparlör çıkışı değiştirilemedi:", error);
+    }
+  } else {
+    console.warn("Bu tarayıcı setSinkId (hoparlör seçimi) özelliğini desteklemiyor.");
   }
 };

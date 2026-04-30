@@ -22,7 +22,10 @@ import {
   createAnswer,
   setRemoteDescription,
   addIceCandidate,
+  setAudioOutputDevice,
+  type AudioSettings,
 } from "@/lib/webrtc";
+import { AudioSettingsDialog } from "./AudioSettingsDialog";
 
 interface MainAppProps {
   userName: string;
@@ -39,6 +42,16 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Audio Settings State
+  const [audioSettings, setAudioSettings] = useState<AudioSettings & { outputDeviceId?: string }>({
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    deviceId: "default",
+    outputDeviceId: "default",
+  });
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -48,7 +61,60 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const { toast } = useToast();
   const db = useFirestore();
 
-  // Lokal Ses Efektleri (Join/Leave)
+  // Load settings from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem("kanka_audio_settings");
+    if (saved) {
+      try {
+        setAudioSettings(JSON.parse(saved));
+      } catch (e) {
+        console.error("Ayarlar yüklenemedi:", e);
+      }
+    }
+  }, []);
+
+  // Apply output device whenever it or the remote audio element changes
+  useEffect(() => {
+    if (remoteAudioRef.current && audioSettings.outputDeviceId) {
+      setAudioOutputDevice(remoteAudioRef.current, audioSettings.outputDeviceId);
+    }
+  }, [audioSettings.outputDeviceId]);
+
+  // Handle settings change
+  const handleSettingsChange = useCallback(async (newSettings: AudioSettings & { outputDeviceId?: string }) => {
+    setAudioSettings(newSettings);
+    
+    // If we are currently in a channel, update the stream
+    if (joinedVoiceChannel && localStreamRef.current) {
+      const oldTracks = localStreamRef.current.getTracks();
+      const newStream = await getLocalAudioStream(newSettings);
+      
+      if (newStream) {
+        // Stop old tracks
+        oldTracks.forEach(t => t.stop());
+        
+        // Update ref
+        localStreamRef.current = newStream;
+        
+        // Respect current mute state
+        newStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
+
+        // Replace track in peer connection if it exists
+        if (peerConnectionRef.current) {
+          const senders = peerConnectionRef.current.getSenders();
+          const audioSender = senders.find(s => s.track?.kind === 'audio');
+          const newTrack = newStream.getAudioTracks()[0];
+          
+          if (audioSender && newTrack) {
+            audioSender.replaceTrack(newTrack);
+            console.log("Mikrofon stream'i başarıyla güncellendi.");
+          }
+        }
+      }
+    }
+  }, [joinedVoiceChannel, isMuted]);
+
+  // Lokal Ses Efektleri
   const playSoundEffect = useCallback((type: 'join' | 'leave') => {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -126,7 +192,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext) audioContext.close();
     };
-  }, [joinedVoiceChannel, isMuted]);
+  }, [joinedVoiceChannel, isMuted, audioSettings]); // Re-init analysis when stream potentially changes
 
   // Presence Sync
   useEffect(() => {
@@ -152,7 +218,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   }, [db, joinedVoiceChannel]);
   const { data: channelUsers } = useCollection(activePresenceQuery);
 
-  // Deterministik Call Yönetimi
+  // Call Management Logic
   const targetUser = useMemo(() => {
     if (!channelUsers) return null;
     return channelUsers.find(u => u.userId !== userId) || null;
@@ -183,13 +249,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: remoteCandidates } = useCollection(candidatesQuery);
 
-  // Deafen Sync
-  useEffect(() => {
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.muted = isDeafened;
-    }
-  }, [isDeafened]);
-
   // PeerConnection Setup
   const setupPeerConnection = useCallback(() => {
     const pc = createPeerConnection();
@@ -218,6 +277,11 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         audio.playsInline = true;
         document.body.appendChild(audio);
         remoteAudioRef.current = audio;
+        
+        // Apply output device to the new element
+        if (audioSettings.outputDeviceId) {
+          setAudioOutputDevice(audio, audioSettings.outputDeviceId);
+        }
       }
       
       remoteAudioRef.current.srcObject = remoteStream;
@@ -227,17 +291,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         .catch(e => console.error("remote audio oynatma hatası:", e));
     };
 
-    pc.onconnectionstatechange = () => {
-      console.log("peer state:", pc.connectionState);
-      if (pc.connectionState === 'connected') console.log("peer connected");
-    };
-
     if (localStreamRef.current) {
       addLocalTracks(pc, localStreamRef.current);
     }
 
     return pc;
-  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened]);
+  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, audioSettings.outputDeviceId]);
 
   // Signaling Flow
   useEffect(() => {
@@ -305,7 +364,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     });
   }, [remoteCandidates, userId]);
 
-  // TEMİZLİK MANTIĞI
+  // Cleanup Logic
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (joinedVoiceChannel) playSoundEffect('leave');
 
@@ -345,7 +404,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         });
         await batch.commit();
         console.log("call temizlendi");
-        console.log("candidate temizlendi");
       } catch (e) {
         console.warn("Call temizlenirken hata oluştu (önemsiz):", e);
       }
@@ -357,17 +415,11 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     setIsDeafened(false);
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
-  useEffect(() => {
-    const handleUnload = () => { handleLeaveVoiceChannel(); };
-    window.addEventListener("beforeunload", handleUnload);
-    return () => window.removeEventListener("beforeunload", handleUnload);
-  }, [handleLeaveVoiceChannel]);
-
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
 
-    // Ön temizlik
+    // Pre-cleanup
     if (db && userId) {
       try {
         const callsRef = collection(db, "voiceChannels", channel, "calls");
@@ -383,7 +435,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
 
     try {
-      const stream = await getLocalAudioStream();
+      const stream = await getLocalAudioStream(audioSettings);
       if (!stream) throw new Error("Mikrofon izni gerekli.");
       localStreamRef.current = stream;
       setJoinedVoiceChannel(channel);
@@ -394,7 +446,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     } catch (error) {
       toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." });
     }
-  }, [toast, joinedVoiceChannel, handleLeaveVoiceChannel, db, userId, playSoundEffect]);
+  }, [toast, joinedVoiceChannel, handleLeaveVoiceChannel, db, userId, playSoundEffect, audioSettings]);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
@@ -430,6 +482,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         isDeafened={isDeafened}
         onToggleDeafen={toggleDeafen}
         isSpeaking={isSpeaking}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
@@ -499,6 +552,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           </aside>
         </div>
       </main>
+
+      <AudioSettingsDialog
+        isOpen={isSettingsOpen}
+        onOpenChange={setIsSettingsOpen}
+        settings={audioSettings}
+        onSettingsChange={handleSettingsChange}
+      />
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client"
 
 import { Button } from '@/components/ui/button';
-import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones } from 'lucide-react';
+import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
@@ -23,6 +23,7 @@ interface RoomSidebarProps {
   isDeafened: boolean;
   onToggleDeafen: () => void;
   isSpeaking?: boolean;
+  onOpenSettings: () => void;
 }
 
 function ChannelUserList({ channelId }: { channelId: string }) {
@@ -68,7 +69,8 @@ export function RoomSidebar({
   onToggleMute,
   isDeafened,
   onToggleDeafen,
-  isSpeaking = false
+  isSpeaking = false,
+  onOpenSettings
 }: RoomSidebarProps) {
   return (
     <TooltipProvider>
@@ -203,6 +205,20 @@ export function RoomSidebar({
             </div>
           </div>
           <div className="flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-white/5"
+                  onClick={onOpenSettings}
+                >
+                  <Settings className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Ses Ayarları</TooltipContent>
+            </Tooltip>
+
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button 
