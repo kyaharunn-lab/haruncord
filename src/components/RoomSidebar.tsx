@@ -3,7 +3,7 @@
 
 import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1, UserMinus, Plus, Trash2, ShieldCheck, Shield } from 'lucide-react';
+import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1, UserMinus, Plus, Trash2, ShieldCheck, Shield, Monitor, MonitorOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
@@ -29,6 +29,8 @@ interface RoomSidebarProps {
   isDeafened: boolean;
   onToggleDeafen: () => void;
   isSpeaking?: boolean;
+  isScreenSharing: boolean;
+  onToggleScreenShare: () => void;
   onOpenSettings: () => void;
   userVolumes: Record<string, number>;
   onVolumeChange: (userId: string, volume: number) => void;
@@ -101,7 +103,7 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, onVo
 export function RoomSidebar({ 
   rooms, voiceChannels, activeRoom, onRoomSelect, userName, userId, userRole, onLogout, 
   joinedVoiceChannel, onJoinVoice, onLeaveVoice, isMuted, onToggleMute, isDeafened, onToggleDeafen, 
-  isSpeaking, onOpenSettings, userVolumes, onVolumeChange, onKickUser, onAddChannel, onDeleteChannel 
+  isSpeaking, isScreenSharing, onToggleScreenShare, onOpenSettings, userVolumes, onVolumeChange, onKickUser, onAddChannel, onDeleteChannel 
 }: RoomSidebarProps) {
   const isAdmin = userRole === 'admin';
 
@@ -188,6 +190,14 @@ export function RoomSidebar({
                 <div className="text-[11px] text-muted-foreground font-medium truncate max-w-[100px]">{joinedVoiceChannel}</div>
               </div>
               <div className="flex gap-1">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="icon" className={cn("h-8 w-8", isScreenSharing ? "text-primary" : "text-muted-foreground")} onClick={onToggleScreenShare}>
+                      {isScreenSharing ? <MonitorOff className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{isScreenSharing ? 'Paylaşımı Durdur' : 'Ekran Paylaş'}</TooltipContent>
+                </Tooltip>
                 <Button variant="ghost" size="icon" className={cn("h-8 w-8", isMuted ? "text-destructive" : "text-muted-foreground")} onClick={onToggleMute}>
                   {isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </Button>

@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { RoomSidebar } from "./RoomSidebar";
-import { Hash, MessageSquare, Plus, Trash2 } from "lucide-react";
+import { Hash, MessageSquare, Plus, Trash2, Monitor, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -46,12 +46,13 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [remoteIsSpeaking, setRemoteIsSpeaking] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAddChannelOpen, setIsAddChannelOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelType, setNewChannelType] = useState<"text" | "voice">("text");
   const [messageText, setMessageText] = useState("");
+  const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
 
   const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
   const [audioSettings, setAudioSettings] = useState<AudioSettings & { outputDeviceId?: string }>({
@@ -64,8 +65,10 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   });
 
   const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const processedIceCandidatesRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -318,20 +321,32 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       }
     };
     pc.ontrack = (event) => {
-      if (!remoteAudioRef.current) {
-        const audio = document.createElement("audio");
-        audio.autoplay = true;
-        audio.playsInline = true;
-        document.body.appendChild(audio);
-        remoteAudioRef.current = audio;
+      const stream = event.streams[0];
+      if (event.track.kind === 'audio') {
+        if (!remoteAudioRef.current) {
+          const audio = document.createElement("audio");
+          audio.autoplay = true;
+          audio.playsInline = true;
+          document.body.appendChild(audio);
+          remoteAudioRef.current = audio;
+        }
+        remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.muted = isDeafened;
+        const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
+        if (targetId) remoteAudioRef.current.volume = (userVolumes[targetId] ?? 100) / 100;
+        remoteAudioRef.current.play().catch(() => {});
+      } else if (event.track.kind === 'video') {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = stream;
+          remoteVideoRef.current.play().catch(() => {});
+          setHasRemoteVideo(true);
+        }
       }
-      remoteAudioRef.current.srcObject = event.streams[0];
-      remoteAudioRef.current.muted = isDeafened;
-      const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
-      if (targetId) remoteAudioRef.current.volume = (userVolumes[targetId] ?? 100) / 100;
-      remoteAudioRef.current.play().catch(() => {});
     };
     if (localStreamRef.current) addLocalTracks(pc, localStreamRef.current);
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(track => pc.addTrack(track, screenStreamRef.current!));
+    }
     return pc;
   }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, userVolumes]);
 
@@ -373,6 +388,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (peerConnectionRef.current) closePeerConnection(peerConnectionRef.current);
     peerConnectionRef.current = null;
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
+    if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach(t => t.stop()); screenStreamRef.current = null; }
     if (db && joinedVoiceChannel && userId) {
       deleteDocumentNonBlocking(doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId));
       const q1 = query(collection(db, "voiceChannels", joinedVoiceChannel, "calls"), where("offererId", "==", userId));
@@ -385,6 +401,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
+    setIsScreenSharing(false);
+    setHasRemoteVideo(false);
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
@@ -400,6 +418,36 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       playSoundEffect('join');
     } catch (error) { toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." }); }
   }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, playSoundEffect, toast]);
+
+  const handleToggleScreenShare = async () => {
+    if (!joinedVoiceChannel) return;
+
+    if (isScreenSharing) {
+      screenStreamRef.current?.getTracks().forEach(t => t.stop());
+      screenStreamRef.current = null;
+      setIsScreenSharing(false);
+      // PeerConnection'dan track'leri çıkar ve re-negotiate yap (MVP için basitçe bağlantıyı yenilemek de bir seçenek)
+      toast({ title: "Paylaşım Durduruldu", description: "Ekran paylaşımı sonlandırıldı." });
+      // Tam bir re-negotiation yerine MVP için bağlantıyı yenilemeyi tercih edebiliriz veya call doc'u temizleyebiliriz
+      handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        screenStreamRef.current = stream;
+        setIsScreenSharing(true);
+        stream.getVideoTracks()[0].onended = () => handleToggleScreenShare();
+        
+        // Mevcut bağlantıya track ekle ve re-negotiate tetikle
+        if (peerConnectionRef.current) {
+          handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+        }
+        
+        toast({ title: "Ekran Paylaşılıyor", description: "Ekranınız şu an kanaldaki diğer kişilere aktarılıyor." });
+      } catch (err) {
+        console.error("Ekran paylaşımı hatası:", err);
+      }
+    }
+  };
 
   const handleKickUser = useCallback((targetId: string) => {
     if (!db || !joinedVoiceChannel || (userRole !== 'admin' && userRole !== 'mod')) return;
@@ -433,6 +481,31 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         </div>
       )}
 
+      {/* Ekran Paylaşımı Görüntüleme Overlay */}
+      {hasRemoteVideo && (
+        <div className="absolute inset-0 z-40 bg-black/90 flex flex-col items-center justify-center p-8">
+          <div className="w-full h-full max-w-5xl relative group">
+            <video 
+              ref={remoteVideoRef} 
+              autoPlay 
+              playsInline 
+              className="w-full h-full object-contain rounded-lg shadow-2xl bg-black"
+            />
+            <div className="absolute top-4 left-4 bg-black/50 backdrop-blur px-3 py-1 rounded-full text-xs font-bold border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity">
+              {targetUser?.displayName} paylaşıyor
+            </div>
+            <Button 
+              variant="destructive" 
+              size="icon" 
+              className="absolute top-4 right-4 h-8 w-8 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={() => setHasRemoteVideo(false)}
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
       <RoomSidebar
         rooms={rooms}
         voiceChannels={voiceChannels}
@@ -450,6 +523,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         isDeafened={isDeafened}
         onToggleDeafen={() => { setIsDeafened(!isDeafened); if (remoteAudioRef.current) remoteAudioRef.current.muted = !isDeafened; }}
         isSpeaking={isSpeaking}
+        isScreenSharing={isScreenSharing}
+        onToggleScreenShare={handleToggleScreenShare}
         onOpenSettings={() => setIsSettingsOpen(true)}
         userVolumes={userVolumes}
         onVolumeChange={handleVolumeChange}
