@@ -7,7 +7,7 @@ import { Hash, MessageSquare } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
-import { doc, collection, serverTimestamp, query, where } from 'firebase/firestore';
+import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer, createAnswer } from '@/lib/webrtc';
 
@@ -49,29 +49,32 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   // Offer Detection and Answer Generation Logic
   useEffect(() => {
-    if (!offers || offers.length === 0 || !userId || !db) return;
+    if (!offers || offers.length === 0 || !userId || !db || !joinedVoiceChannel) return;
 
-    offers.forEach(async (offerDoc) => {
-      // Başka kullanıcının offer'ı mı?
-      if (offerDoc.userId !== userId) {
-        console.log('offer bulundu:', offerDoc.displayName, offerDoc.id);
-        
-        // Eğer sesli kanaldaysak (stream varsa) yanıt ver
-        if (localStreamRef.current) {
-          const pc = createPeerConnection();
-          if (pc) {
-            addLocalTracks(pc, localStreamRef.current);
-            // Answer oluştur (helper setRemoteDescription ve setLocalDescription yapıyor)
-            const answer = await createAnswer(pc, offerDoc.offer);
-            if (answer) {
-              console.log('answer hazır');
-              // Kullanıcı sadece konsola yaz dedi, Firestore'a henüz yazmıyoruz.
+    const processOffers = async () => {
+      for (const offerDoc of offers) {
+        // Başka kullanıcının offer'ı mı?
+        if (offerDoc.userId !== userId) {
+          console.log('offer bulundu:', offerDoc.displayName, offerDoc.id);
+          
+          // Eğer sesli kanaldaysak (stream varsa) yanıt ver
+          if (localStreamRef.current) {
+            const pc = createPeerConnection();
+            if (pc) {
+              addLocalTracks(pc, localStreamRef.current);
+              // Answer oluştur (helper setRemoteDescription ve setLocalDescription yapıyor)
+              const answer = await createAnswer(pc, offerDoc.offer);
+              if (answer) {
+                console.log('answer hazır');
+              }
             }
           }
         }
       }
-    });
-  }, [offers, userId, db]);
+    };
+
+    processOffers();
+  }, [offers, userId, db, joinedVoiceChannel]);
 
   // Presence sync
   useEffect(() => {
