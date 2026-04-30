@@ -8,7 +8,7 @@ import { Hash, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, deleteDoc } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   deleteDocumentNonBlocking,
@@ -97,7 +97,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   // Apply volume whenever target user or volume changes
   useEffect(() => {
     if (remoteAudioRef.current && joinedVoiceChannel) {
-      // Find the user we are currently connected to (simplified for 1:1)
       const targetUserInCall = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
       if (targetUserInCall) {
         const volume = userVolumes[targetUserInCall] ?? 100;
@@ -117,22 +116,15 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const handleSettingsChange = useCallback(async (newSettings: AudioSettings & { outputDeviceId?: string }) => {
     setAudioSettings(newSettings);
     
-    // If we are currently in a channel, update the stream
     if (joinedVoiceChannel && localStreamRef.current) {
       const oldTracks = localStreamRef.current.getTracks();
       const newStream = await getLocalAudioStream(newSettings);
       
       if (newStream) {
-        // Stop old tracks
         oldTracks.forEach(t => t.stop());
-        
-        // Update ref
         localStreamRef.current = newStream;
-        
-        // Respect current mute state
         newStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
 
-        // Replace track in peer connection if it exists
         if (peerConnectionRef.current) {
           const senders = peerConnectionRef.current.getSenders();
           const audioSender = senders.find(s => s.track?.kind === 'audio');
@@ -227,29 +219,59 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
   }, [joinedVoiceChannel, isMuted, audioSettings]);
 
-  // Presence Sync
+  // Presence Heartbeat & Cleanup
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !userId) return;
+
     const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
-    setDocumentNonBlocking(presenceRef, {
-      userId,
-      displayName: userName,
-      channelId: joinedVoiceChannel,
-      joinedAt: serverTimestamp(),
-      isMuted,
-    }, { merge: true });
+    
+    // Initial presence
+    const updatePresence = () => {
+      setDocumentNonBlocking(presenceRef, {
+        userId,
+        displayName: userName,
+        voiceChannelId: joinedVoiceChannel,
+        lastSeen: new Date().toISOString(), // Use local ISO for easier client filtering
+        isMuted,
+        id: userId,
+      }, { merge: true });
+    };
+
+    updatePresence();
+    const heartbeat = setInterval(updatePresence, 10000); // 10s heartbeat
+
+    // Page close/refresh cleanup
+    const handleUnload = () => {
+      deleteDocumentNonBlocking(presenceRef);
+    };
+    window.addEventListener("beforeunload", handleUnload);
 
     return () => {
+      clearInterval(heartbeat);
+      window.removeEventListener("beforeunload", handleUnload);
       deleteDocumentNonBlocking(presenceRef);
+      console.log("presence temizlendi");
     };
   }, [db, joinedVoiceChannel, userId, userName, isMuted]);
 
-  // Channel Users
-  const activePresenceQuery = useMemoFirebase(() => {
+  // Channel Users (Live Collection)
+  const presenceQuery = useMemoFirebase(() => {
     if (!db || !joinedVoiceChannel) return null;
     return collection(db, "voiceChannels", joinedVoiceChannel, "presence");
   }, [db, joinedVoiceChannel]);
-  const { data: channelUsers } = useCollection(activePresenceQuery);
+  const { data: rawChannelUsers } = useCollection(presenceQuery);
+
+  // Filter Active Users (Local Heartbeat Check)
+  const channelUsers = useMemo(() => {
+    if (!rawChannelUsers) return null;
+    const now = Date.now();
+    return rawChannelUsers.filter(u => {
+      if (!u.lastSeen) return true;
+      const lastSeenDate = new Date(u.lastSeen);
+      // Show users active in last 30 seconds
+      return now - lastSeenDate.getTime() < 30000;
+    });
+  }, [rawChannelUsers]);
 
   // Call Management Logic
   const targetUser = useMemo(() => {
@@ -319,7 +341,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       remoteAudioRef.current.srcObject = remoteStream;
       remoteAudioRef.current.muted = isDeafened;
       
-      // Apply initial volume
       const targetUserId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
       if (targetUserId) {
         const volume = userVolumes[targetUserId] ?? 100;
@@ -363,14 +384,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         }
 
         if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") {
-          console.log("answer alındı");
           await setRemoteDescription(peerConnectionRef.current, callData.answer);
           console.log("answer uygulandı");
         }
       } 
       else {
         if (callData?.offer && !peerConnectionRef.current) {
-          console.log("offer alındı");
           const pc = setupPeerConnection();
           if (!pc) return;
           peerConnectionRef.current = pc;
@@ -445,7 +464,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         await batch.commit();
         console.log("call temizlendi");
       } catch (e) {
-        console.warn("Call temizlenirken hata oluştu (önemsiz):", e);
+        console.warn("Call temizlenirken hata oluştu:", e);
       }
     }
 
@@ -469,7 +488,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         [...snap1.docs, ...snap2.docs].forEach(d => batch.delete(d.ref));
         await batch.commit();
       } catch (e) {
-        console.warn("Ön temizlik başarısız (önemsiz):", e);
+        console.warn("Ön temizlik başarısız:", e);
       }
     }
 
