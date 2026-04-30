@@ -43,13 +43,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const processedCallIdRef = useRef<string | null>(null);
   const processedIceCandidatesRef = useRef<Set<string>>(new Set());
 
   const { toast } = useToast();
   const db = useFirestore();
 
-  // Voice Activity Detection (Glow Efekti)
+  // Voice Activity Detection
   useEffect(() => {
     if (!localStreamRef.current || isMuted || !joinedVoiceChannel) {
       setIsSpeaking(false);
@@ -199,7 +198,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     const handleSignaling = async () => {
       if (!callInfo || !callDocRef || !db) return;
 
-      // Offerer Logic
+      // 1. Offerer Logic
       if (callInfo.isOfferer) {
         if (!peerConnectionRef.current) {
           const pc = setupPeerConnection();
@@ -215,20 +214,21 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
               offer: { type: offer.type, sdp: offer.sdp },
               createdAt: serverTimestamp(),
             }, { merge: true });
-            console.log("offer yazıldı");
+            console.log("offer firestore yazıldı");
           }
         }
 
+        // Answer Bekle
         if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") {
-          console.log("answer alındı");
+          console.log("answer firestore okundu");
           await setRemoteDescription(peerConnectionRef.current, callData.answer);
           console.log("answer uygulandı");
         }
       } 
-      // Answerer Logic
+      // 2. Answerer Logic
       else {
         if (callData?.offer && !peerConnectionRef.current) {
-          console.log("offer alındı");
+          console.log("offer firestore okundu");
           const pc = setupPeerConnection();
           if (!pc) return;
           peerConnectionRef.current = pc;
@@ -237,15 +237,16 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           if (answer) {
             setDocumentNonBlocking(callDocRef, {
               answer: { type: answer.type, sdp: answer.sdp },
+              answererId: userId,
             }, { merge: true });
-            console.log("answer yazıldı");
+            console.log("answer firestore yazıldı");
           }
         }
       }
     };
 
     handleSignaling();
-  }, [callInfo, callData, callDocRef, db, setupPeerConnection]);
+  }, [callInfo, callData, callDocRef, db, setupPeerConnection, userId]);
 
   // ICE Candidate Processing
   useEffect(() => {
@@ -291,14 +292,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       remoteAudioRef.current.srcObject = null;
     }
 
-    if (callDocRef && userId) {
+    if (callDocRef && callInfo?.isOfferer) {
       deleteDocumentNonBlocking(callDocRef);
     }
 
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
-  }, [callDocRef, userId]);
+  }, [callDocRef, callInfo]);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
