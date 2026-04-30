@@ -303,8 +303,9 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           console.log("candidate temizlendi");
         });
 
-        // Eğer Offerer ise ana Call dokümanını sil
-        if (callInfo.isOfferer && callDocRef) {
+        // Eğer Offerer ise ana Call dokümanını sil (Arama sahibi temizliği)
+        // Eğer Answerer ise de dokümanı silerek aramanın bittiğini bildirebiliriz
+        if (callDocRef) {
           deleteDocumentNonBlocking(callDocRef);
           console.log("call temizlendi");
         }
@@ -316,9 +317,10 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     setIsSpeaking(false);
   }, [db, joinedVoiceChannel, userId, callInfo, callDocRef]);
 
-  // Sayfa kapanışında temizlik
+  // Sayfa kapanışında veya yenilenmesinde temizlik
   useEffect(() => {
     const handleUnload = () => {
+      // Senkron temizlik denemesi (presence en azından silinmeye çalışılır)
       handleLeaveVoiceChannel();
     };
     window.addEventListener("beforeunload", handleUnload);
