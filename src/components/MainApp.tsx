@@ -7,7 +7,7 @@ import { Hash, MessageSquare } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
-import { doc, collection, serverTimestamp } from 'firebase/firestore';
+import { doc, collection, serverTimestamp, query, where } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer } from '@/lib/webrtc';
 
@@ -31,6 +31,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const db = useFirestore();
   const { user } = useUser();
 
+  // Presence Query
   const activePresenceQuery = useMemoFirebase(() => {
     if (!db || !joinedVoiceChannel || !user) return null;
     return collection(db, 'voiceChannels', joinedVoiceChannel, 'presence');
@@ -38,7 +39,26 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: channelUsers } = useCollection(activePresenceQuery);
 
-  // Presence logic: Sync with Firestore when joined
+  // Offers Query (Signaling)
+  const offersQuery = useMemoFirebase(() => {
+    if (!db || !joinedVoiceChannel || !user) return null;
+    return collection(db, 'voiceChannels', joinedVoiceChannel, 'offers');
+  }, [db, joinedVoiceChannel, user]);
+
+  const { data: offers } = useCollection(offersQuery);
+
+  // Offer Detection Logic
+  useEffect(() => {
+    if (!offers || offers.length === 0 || !userId) return;
+
+    offers.forEach(offerDoc => {
+      if (offerDoc.userId !== userId) {
+        console.log('offer bulundu:', offerDoc.displayName, offerDoc.id);
+      }
+    });
+  }, [offers, userId]);
+
+  // Presence sync
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !user || !userId) return;
 
@@ -82,7 +102,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         addLocalTracks(pc, stream);
         peerConnectionRef.current = pc;
 
-        // Eğer odada başka kullanıcılar varsa (mevcut kullanıcı henüz listeye eklenmediği için channelUsers başkalarını temsil eder)
+        // Eğer odada başka kullanıcılar varsa offer oluştur
         if (channelUsers && channelUsers.length > 0) {
           const offer = await createOffer(pc);
           if (offer) {
