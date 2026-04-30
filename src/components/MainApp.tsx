@@ -62,6 +62,24 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: remoteCandidates } = useCollection(candidatesQuery);
 
+  // Helper to setup a peer connection with ontrack handler
+  const setupPeerConnection = useCallback(() => {
+    const pc = createPeerConnection();
+    if (pc) {
+      pc.ontrack = (event) => {
+        console.log('Uzak ses akışı alındı');
+        const remoteStream = event.streams[0];
+        if (remoteStream) {
+          const audio = new Audio();
+          audio.srcObject = remoteStream;
+          audio.autoplay = true;
+          audio.play().catch(e => console.error("Uzak ses oynatılamadı:", e));
+        }
+      };
+    }
+    return pc;
+  }, []);
+
   // Presence sync
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !user || !userId) return;
@@ -91,9 +109,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           console.log('offer bulundu:', offerDoc.displayName);
           
           if (localStreamRef.current) {
-            const pc = peerConnectionRef.current || createPeerConnection();
-            if (pc) {
+            let pc = peerConnectionRef.current;
+            if (!pc) {
+              pc = setupPeerConnection();
               peerConnectionRef.current = pc;
+            }
+            
+            if (pc) {
               addLocalTracks(pc, localStreamRef.current);
               const answer = await createAnswer(pc, offerDoc.offer);
               if (answer) {
@@ -117,7 +139,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
 
     processOffers();
-  }, [offers, userId, db, joinedVoiceChannel, userName]);
+  }, [offers, userId, db, joinedVoiceChannel, userName, setupPeerConnection]);
 
   // Handle Incoming Answers (Connection Completion)
   useEffect(() => {
@@ -172,7 +194,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       
       localStreamRef.current = stream;
       
-      const pc = createPeerConnection();
+      const pc = setupPeerConnection();
       if (pc) {
         addLocalTracks(pc, stream);
         peerConnectionRef.current = pc;
@@ -211,7 +233,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         description: 'Sesli kanala katılmak için mikrofon izni vermeniz gerekiyor.',
       });
     }
-  }, [toast, joinedVoiceChannel, channelUsers, db, userId, userName]);
+  }, [toast, joinedVoiceChannel, channelUsers, db, userId, userName, setupPeerConnection]);
 
   const handleLeaveVoiceChannel = useCallback(() => {
     if (peerConnectionRef.current) {
