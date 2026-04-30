@@ -1,4 +1,3 @@
-
 "use client"
 
 import { Button } from '@/components/ui/button';
@@ -37,15 +36,15 @@ function ChannelUserList({ channelId }: { channelId: string }) {
 
   return (
     <div className="ml-4 space-y-0.5 mt-1">
-      {users.map((user) => (
-        <div key={user.userId} className="flex items-center justify-between group/user py-0.5 px-2 rounded hover:bg-white/5 transition-colors">
+      {users.map((u) => (
+        <div key={u.id} className="flex items-center justify-between group/user py-0.5 px-2 rounded hover:bg-white/5 transition-colors">
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground">
-              {user.displayName.charAt(0).toUpperCase()}
+              {u.displayName.charAt(0).toUpperCase()}
             </div>
-            <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[100px]">{user.displayName}</span>
+            <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[100px]">{u.displayName}</span>
           </div>
-          {user.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
+          {u.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
         </div>
       ))}
     </div>
@@ -58,7 +57,6 @@ export function RoomSidebar({
   activeRoom, 
   onRoomSelect, 
   userName, 
-  userId,
   onLogout,
   joinedVoiceChannel,
   onJoinVoice,
@@ -68,7 +66,7 @@ export function RoomSidebar({
 }: RoomSidebarProps) {
   return (
     <TooltipProvider>
-      <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">
+      <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64 shrink-0">
         <div className="h-14 flex items-center px-4 border-b border-sidebar-border shadow-sm">
           <h2 className="font-bold text-lg text-sidebar-foreground tracking-tight truncate">haruncord</h2>
         </div>
@@ -107,14 +105,13 @@ export function RoomSidebar({
                     className={cn(
                       "w-full justify-start gap-2 h-9 px-2 font-medium transition-all group",
                       joinedVoiceChannel === channel 
-                        ? "text-sidebar-accent-foreground" 
+                        ? "text-sidebar-accent-foreground bg-sidebar-accent/20" 
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
                     )}
                   >
                     <Volume2 className={cn("w-4 h-4", joinedVoiceChannel === channel ? "text-green-500" : "text-muted-foreground group-hover:text-sidebar-foreground")} />
                     {channel}
                   </Button>
-                  
                   <ChannelUserList channelId={channel} />
                 </div>
               ))}

@@ -1,4 +1,3 @@
-
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -9,7 +8,6 @@ import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
-import { cn } from '@/lib/utils';
 import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection } from '@/lib/webrtc';
 
 interface MainAppProps {
@@ -34,17 +32,16 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   // Presence logic: Sync with Firestore when joined
   useEffect(() => {
-    if (!db || !joinedVoiceChannel || !user) return;
+    if (!db || !joinedVoiceChannel || !user || !userId) return;
 
     const presenceRef = doc(db, 'voiceChannels', joinedVoiceChannel, 'presence', userId);
     
-    // Signaling başlangıcı için gerekli alanlar
     setDocumentNonBlocking(presenceRef, {
       userId,
       displayName: userName,
       channelId: joinedVoiceChannel,
       joinedAt: serverTimestamp(),
-      isMuted: isMuted // UI için susturma bilgisini tutmaya devam ediyoruz
+      isMuted: isMuted
     }, { merge: true });
 
     return () => {
@@ -62,7 +59,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
 
-    // Temizlik: Mevcut bağlantıları ve stream'i kapat
+    // Temizlik
     if (peerConnectionRef.current) {
       closePeerConnection(peerConnectionRef.current);
       peerConnectionRef.current = null;
@@ -73,13 +70,11 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
 
     try {
-      // Mikrofon akışını al
       const stream = await getLocalAudioStream();
       if (!stream) throw new Error("Mikrofon akışı alınamadı.");
       
       localStreamRef.current = stream;
       
-      // Peer Connection oluştur ve yerel trackleri ekle
       const pc = createPeerConnection();
       if (pc) {
         addLocalTracks(pc, stream);
@@ -127,12 +122,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   useEffect(() => {
     return () => {
-      if (peerConnectionRef.current) {
-        closePeerConnection(peerConnectionRef.current);
-      }
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => track.stop());
-      }
+      if (peerConnectionRef.current) closePeerConnection(peerConnectionRef.current);
+      if (localStreamRef.current) localStreamRef.current.getTracks().forEach(track => track.stop());
     };
   }, []);
 
@@ -168,7 +159,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                 <MessageSquare className="w-16 h-16" />
               </div>
               <h2 className="text-2xl font-bold">Hoş geldin, {userName}!</h2>
-              <p className="max-w-xs mt-2 italic text-sm">Burası {activeRoom} odası. Henüz mesaj yok, ilk sen bir şeyler söyleyebilirsin.</p>
+              <p className="max-w-xs mt-2 italic text-sm">Burası {activeRoom} odası. Henüz mesaj yok.</p>
             </div>
           </div>
 
@@ -182,9 +173,9 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                   <div className="space-y-1">
                     {joinedVoiceChannel && channelUsers ? (
                       channelUsers.map((u) => (
-                        <div key={u.userId} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
+                        <div key={u.id} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
                           <div className="relative">
-                            <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold">
+                            <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs">
                               {u.displayName.charAt(0).toUpperCase()}
                             </div>
                             <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full"></div>
@@ -200,7 +191,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                     ) : (
                       <div className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
                         <div className="relative">
-                          <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold">
+                          <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs">
                             {userName.charAt(0).toUpperCase()}
                           </div>
                           <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full"></div>
