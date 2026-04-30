@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
+import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { collection } from 'firebase/firestore';
 
 interface RoomSidebarProps {
@@ -25,10 +25,11 @@ interface RoomSidebarProps {
 
 function ChannelUserList({ channelId }: { channelId: string }) {
   const db = useFirestore();
+  const { user } = useUser();
   const q = useMemoFirebase(() => {
-    if (!db) return null;
+    if (!db || !user) return null;
     return collection(db, 'voiceChannels', channelId, 'presence');
-  }, [db, channelId]);
+  }, [db, channelId, user]);
   
   const { data: users } = useCollection(q);
 

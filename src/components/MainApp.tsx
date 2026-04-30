@@ -6,7 +6,7 @@ import { RoomSidebar } from './RoomSidebar';
 import { Hash, MessageSquare } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
-import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
+import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 
@@ -27,10 +27,11 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const localStreamRef = useRef<MediaStream | null>(null);
   const { toast } = useToast();
   const db = useFirestore();
+  const { user } = useUser();
 
   // Presence logic: Sync with Firestore when joined
   useEffect(() => {
-    if (!db || !joinedVoiceChannel) return;
+    if (!db || !joinedVoiceChannel || !user) return;
 
     const presenceRef = doc(db, 'voiceChannels', joinedVoiceChannel, 'presence', userId);
     
@@ -45,23 +46,23 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     return () => {
       deleteDocumentNonBlocking(presenceRef);
     };
-  }, [db, joinedVoiceChannel, userId, userName, isMuted]);
+  }, [db, joinedVoiceChannel, userId, userName, isMuted, user]);
 
   // Listen to presence for the active channel (or all if needed)
   // To keep it simple, we listen to presence for each voice channel to show in sidebar
   const presenceQueries = voiceChannels.map(channel => {
     return useMemoFirebase(() => {
-      if (!db) return null;
+      if (!db || !user) return null;
       return collection(db, 'voiceChannels', channel, 'presence');
-    }, [db, channel]);
+    }, [db, channel, user]);
   });
 
   // Since we can't easily map useCollection in a loop due to hooks rules,
   // we use the joined channel's presence for the right sidebar.
   const activePresenceQuery = useMemoFirebase(() => {
-    if (!db || !joinedVoiceChannel) return null;
+    if (!db || !joinedVoiceChannel || !user) return null;
     return collection(db, 'voiceChannels', joinedVoiceChannel, 'presence');
-  }, [db, joinedVoiceChannel]);
+  }, [db, joinedVoiceChannel, user]);
 
   const { data: channelUsers } = useCollection(activePresenceQuery);
 
