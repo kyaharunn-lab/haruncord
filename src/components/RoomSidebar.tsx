@@ -3,7 +3,7 @@
 
 import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1, UserMinus, Plus, Trash2, ShieldCheck, Shield, Monitor, MonitorOff } from 'lucide-react';
+import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1, UserMinus, Plus, Trash2, ShieldCheck, Shield, Monitor, MonitorOff, Camera, CameraOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
@@ -31,6 +31,8 @@ interface RoomSidebarProps {
   isSpeaking?: boolean;
   isScreenSharing: boolean;
   onToggleScreenShare: () => void;
+  isCameraOn: boolean;
+  onToggleCamera: () => void;
   onOpenSettings: () => void;
   userVolumes: Record<string, number>;
   onVolumeChange: (userId: string, volume: number) => void;
@@ -72,12 +74,18 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, onVo
               <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground shrink-0">{u.displayName.charAt(0)}</div>
               <div className="flex flex-col min-w-0">
                 <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[80px]">{u.displayName}</span>
-                {u.isSharingScreen && (
-                  <span className="flex items-center gap-1 bg-primary/20 text-primary text-[9px] font-bold px-1 py-0.5 rounded leading-none w-fit border border-primary/30 uppercase animate-pulse">
-                    <Monitor className="w-2 h-2" />
-                    Yayında
-                  </span>
-                )}
+                <div className="flex gap-1">
+                  {u.isSharingScreen && (
+                    <span className="flex items-center gap-1 bg-primary/20 text-primary text-[8px] font-bold px-1 py-0.2 rounded leading-none w-fit border border-primary/30 uppercase">
+                      <Monitor className="w-2 h-2" />
+                    </span>
+                  )}
+                  {u.isCameraOn && (
+                    <span className="flex items-center gap-1 bg-green-500/20 text-green-500 text-[8px] font-bold px-1 py-0.2 rounded leading-none w-fit border border-green-500/30 uppercase">
+                      <Camera className="w-2 h-2" />
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -111,7 +119,7 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, onVo
 export function RoomSidebar({ 
   rooms, voiceChannels, activeRoom, onRoomSelect, userName, userId, userRole, onLogout, 
   joinedVoiceChannel, onJoinVoice, onLeaveVoice, isMuted, onToggleMute, isDeafened, onToggleDeafen, 
-  isSpeaking, isScreenSharing, onToggleScreenShare, onOpenSettings, userVolumes, onVolumeChange, onKickUser, onAddChannel, onDeleteChannel 
+  isSpeaking, isScreenSharing, onToggleScreenShare, isCameraOn, onToggleCamera, onOpenSettings, userVolumes, onVolumeChange, onKickUser, onAddChannel, onDeleteChannel 
 }: RoomSidebarProps) {
   const isAdmin = userRole === 'admin';
 
@@ -197,7 +205,15 @@ export function RoomSidebar({
                 </div>
                 <div className="text-[11px] text-muted-foreground font-medium truncate max-w-[100px]">{joinedVoiceChannel}</div>
               </div>
-              <div className="flex gap-1">
+              <div className="flex gap-0.5">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="icon" className={cn("h-8 w-8", isCameraOn ? "text-green-500" : "text-muted-foreground")} onClick={onToggleCamera}>
+                      {isCameraOn ? <CameraOff className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{isCameraOn ? 'Kamerayı Kapat' : 'Kamerayı Aç'}</TooltipContent>
+                </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button variant="ghost" size="icon" className={cn("h-8 w-8", isScreenSharing ? "text-primary" : "text-muted-foreground")} onClick={onToggleScreenShare}>

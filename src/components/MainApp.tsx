@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { RoomSidebar } from "./RoomSidebar";
-import { Hash, MessageSquare, Plus, Trash2, Monitor, X, MicOff, Video, User } from "lucide-react";
+import { Hash, MessageSquare, Plus, Trash2, Monitor, X, MicOff, Video, User, Camera, CameraOff } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const [isDeafened, setIsDeafened] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isCameraOn, setIsCameraOn] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAddChannelOpen, setIsAddChannelOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState("");
@@ -65,9 +66,11 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const voiceRoomVideosRef = useRef<Record<string, HTMLVideoElement | null>>({});
   const processedIceCandidatesRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -83,7 +86,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const { data: voiceChannelsData } = useCollection(voiceChannelsQuery);
   const voiceChannels = useMemo(() => voiceChannelsData?.map(v => v.id) || ["Genel Ses"], [voiceChannelsData]);
 
-  // Varsayılan kanalları oluştur (ilk kez açılıyorsa)
+  // Varsayılan kanalları oluştur
   useEffect(() => {
     if (db && roomsData?.length === 0) {
       ["Genel", "Oyun", "Muhabbet"].forEach(id => {
@@ -160,7 +163,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     setMessageText("");
   };
 
-  // --- Sesli Sohbet Mantığı (WebRTC) ---
+  // --- Sesli Sohbet Mantığı ---
   useEffect(() => {
     const savedAudio = localStorage.getItem("kanka_voice_audio_settings");
     if (savedAudio) {
@@ -283,7 +286,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         isMuted, 
         id: userId,
         isSharingScreen: isScreenSharing,
-        isSpeaking: isSpeaking, // Konuşma durumunu presence'a ekle
+        isCameraOn: isCameraOn,
+        isSpeaking: isSpeaking,
       }, { merge: true });
     };
     updatePresence();
@@ -292,7 +296,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       clearInterval(heartbeat);
       deleteDocumentNonBlocking(presenceRef);
     };
-  }, [db, joinedVoiceChannel, userId, userName, isMuted, isScreenSharing, isSpeaking]);
+  }, [db, joinedVoiceChannel, userId, userName, isMuted, isScreenSharing, isCameraOn, isSpeaking]);
 
   const presenceQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
   const { data: rawChannelUsers } = useCollection(presenceQuery);
@@ -302,7 +306,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     return rawChannelUsers.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
   }, [rawChannelUsers]);
 
-  // Görünümdeki ses kanalındaki kullanıcılar
   const viewPresenceQuery = useMemoFirebase(() => db && activeView.type === 'voice' ? collection(db, "voiceChannels", activeView.id, "presence") : null, [db, activeView]);
   const { data: rawViewUsers } = useCollection(viewPresenceQuery);
   const viewUsers = useMemo(() => {
@@ -350,16 +353,30 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         if (targetId) remoteAudioRef.current.volume = (userVolumes[targetId] ?? 100) / 100;
         remoteAudioRef.current.play().catch(() => {});
       } else if (event.track.kind === 'video') {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-          remoteVideoRef.current.play().catch(() => {});
-          setHasRemoteVideo(true);
+        // Ekran paylaşımı veya kamera
+        const isScreen = stream.getVideoTracks()[0]?.label.toLowerCase().includes('screen');
+        if (isScreen) {
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            remoteVideoRef.current.play().catch(() => {});
+            setHasRemoteVideo(true);
+          }
+        } else {
+          // Kamera stream'i oda kartlarına yönlendirilir
+          const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
+          if (targetId && voiceRoomVideosRef.current[targetId]) {
+            voiceRoomVideosRef.current[targetId]!.srcObject = stream;
+            voiceRoomVideosRef.current[targetId]!.play().catch(() => {});
+          }
         }
       }
     };
     if (localStreamRef.current) addLocalTracks(pc, localStreamRef.current);
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach(track => pc.addTrack(track, screenStreamRef.current!));
+    }
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach(track => pc.addTrack(track, cameraStreamRef.current!));
     }
     return pc;
   }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, userVolumes]);
@@ -403,6 +420,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     peerConnectionRef.current = null;
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
     if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach(t => t.stop()); screenStreamRef.current = null; }
+    if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach(t => t.stop()); cameraStreamRef.current = null; }
     if (db && joinedVoiceChannel && userId) {
       deleteDocumentNonBlocking(doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId));
       const q1 = query(collection(db, "voiceChannels", joinedVoiceChannel, "calls"), where("offererId", "==", userId));
@@ -416,6 +434,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
     setIsScreenSharing(false);
+    setIsCameraOn(false);
     setHasRemoteVideo(false);
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
@@ -461,6 +480,33 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     }
   };
 
+  const handleToggleCamera = async () => {
+    if (!joinedVoiceChannel) return;
+
+    if (isCameraOn) {
+      cameraStreamRef.current?.getTracks().forEach(t => t.stop());
+      cameraStreamRef.current = null;
+      setIsCameraOn(false);
+      toast({ title: "Kamera Kapatıldı", description: "Görüntü paylaşımı sonlandırıldı." });
+      handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        cameraStreamRef.current = stream;
+        setIsCameraOn(true);
+        
+        if (peerConnectionRef.current) {
+          handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+        }
+        
+        toast({ title: "Kamera Açıldı", description: "Görüntünüz şu an kanaldaki diğer kişilere aktarılıyor." });
+      } catch (err) {
+        console.error("Kamera hatası:", err);
+        toast({ variant: "destructive", title: "Hata", description: "Kameraya erişilemedi." });
+      }
+    }
+  };
+
   const handleKickUser = useCallback((targetId: string) => {
     if (!db || !activeView.id || (userRole !== 'admin' && userRole !== 'mod')) return;
     setDocumentNonBlocking(doc(db, "voiceChannels", activeView.id, "presence", targetId), { isKicked: true }, { merge: true });
@@ -469,7 +515,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground relative">
-      {/* Oyun Modu Overlay (Sadece kanala bağlıyken görünür) */}
       {joinedVoiceChannel && (
         <div className="absolute top-4 right-4 z-50 pointer-events-none">
           <div className="bg-black/40 backdrop-blur-md rounded-xl p-3 border border-white/10 shadow-2xl min-w-[160px]">
@@ -493,7 +538,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         </div>
       )}
 
-      {/* Ekran Paylaşımı Görüntüleme Overlay */}
       {hasRemoteVideo && (
         <div className="absolute inset-0 z-40 bg-black/90 flex flex-col items-center justify-center p-8">
           <div className="w-full h-full max-w-5xl relative group">
@@ -537,6 +581,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         isSpeaking={isSpeaking}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={handleToggleScreenShare}
+        isCameraOn={isCameraOn}
+        onToggleCamera={handleToggleCamera}
         onOpenSettings={() => setIsSettingsOpen(true)}
         userVolumes={userVolumes}
         onVolumeChange={handleVolumeChange}
@@ -602,15 +648,37 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
               )}>
                 {viewUsers.map((u) => {
                   const isUserSpeaking = u.isSpeaking;
+                  const isMe = u.userId === userId;
+                  
                   return (
                     <div key={u.id} className={cn(
-                      "aspect-video bg-[#2B2D31] rounded-2xl flex flex-col items-center justify-center relative shadow-xl transition-all border-4",
+                      "aspect-video bg-[#2B2D31] rounded-2xl flex flex-col items-center justify-center relative shadow-xl transition-all border-4 overflow-hidden",
                       isUserSpeaking ? "border-green-500 scale-[1.02]" : "border-transparent"
                     )}>
-                      <div className="w-24 h-24 rounded-full bg-primary flex items-center justify-center text-3xl font-bold shadow-2xl">
-                        {u.displayName.charAt(0)}
-                      </div>
-                      <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-black/40 backdrop-blur px-3 py-1.5 rounded-full">
+                      {/* Video veya Avatar */}
+                      {u.isCameraOn ? (
+                        <video
+                          ref={(el) => {
+                            if (isMe && el && cameraStreamRef.current) {
+                              el.srcObject = cameraStreamRef.current;
+                              el.muted = true;
+                              el.play().catch(() => {});
+                            } else if (el) {
+                              voiceRoomVideosRef.current[u.userId] = el;
+                            }
+                          }}
+                          autoPlay
+                          playsInline
+                          muted={isMe}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-24 h-24 rounded-full bg-primary flex items-center justify-center text-3xl font-bold shadow-2xl">
+                          {u.displayName.charAt(0)}
+                        </div>
+                      )}
+
+                      <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-black/40 backdrop-blur px-3 py-1.5 rounded-full z-10">
                         <span className="text-sm font-bold text-white">{u.displayName}</span>
                         {u.isMuted && <MicOff className="w-3.5 h-3.5 text-destructive" />}
                         {u.isSharingScreen && (
@@ -619,9 +687,15 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                             Yayında
                           </span>
                         )}
+                        {u.isCameraOn && (
+                          <span className="bg-green-500/20 text-green-500 text-[10px] font-black px-2 py-0.5 rounded leading-none uppercase border border-green-500/30 flex items-center gap-1">
+                            <Camera className="w-2.5 h-2.5" />
+                            Kamera
+                          </span>
+                        )}
                       </div>
                       {isUserSpeaking && (
-                        <div className="absolute inset-0 rounded-2xl ring-4 ring-green-500/30 animate-pulse pointer-events-none" />
+                        <div className="absolute inset-0 rounded-2xl ring-4 ring-green-500/30 animate-pulse pointer-events-none z-10" />
                       )}
                     </div>
                   );
