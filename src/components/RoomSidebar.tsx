@@ -1,8 +1,7 @@
-
 "use client"
 
 import { Button } from '@/components/ui/button';
-import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2 } from 'lucide-react';
+import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
@@ -21,6 +20,8 @@ interface RoomSidebarProps {
   onLeaveVoice: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
+  isDeafened: boolean;
+  onToggleDeafen: () => void;
   isSpeaking?: boolean;
 }
 
@@ -65,6 +66,8 @@ export function RoomSidebar({
   onLeaveVoice,
   isMuted,
   onToggleMute,
+  isDeafened,
+  onToggleDeafen,
   isSpeaking = false
 }: RoomSidebarProps) {
   return (
@@ -146,6 +149,22 @@ export function RoomSidebar({
                   </TooltipTrigger>
                   <TooltipContent side="top">
                     {isMuted ? 'Mikrofonu Aç' : 'Mikrofonu Kapat'}
+                  </TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className={cn("h-8 w-8", isDeafened ? "text-destructive hover:text-destructive" : "text-muted-foreground hover:text-foreground")}
+                      onClick={onToggleDeafen}
+                    >
+                      <Headphones className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    {isDeafened ? 'Kulaklığı Aç' : 'Kulaklığı Kapat'}
                   </TooltipContent>
                 </Tooltip>
 

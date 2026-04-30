@@ -37,6 +37,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [activeRoom, setActiveRoom] = useState(rooms[0]);
   const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [isDeafened, setIsDeafened] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -59,7 +60,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
       const now = audioCtx.currentTime;
       gainNode.gain.setValueAtTime(0, now);
-      gainNode.gain.linearRampToValueAtTime(0.05, now + 0.05); // Düşük ses seviyesi
+      gainNode.gain.linearRampToValueAtTime(0.05, now + 0.05);
 
       if (type === 'join') {
         oscillator.type = 'sine';
@@ -182,6 +183,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: remoteCandidates } = useCollection(candidatesQuery);
 
+  // Deafen Sync
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = isDeafened;
+    }
+  }, [isDeafened]);
+
   // PeerConnection Setup
   const setupPeerConnection = useCallback(() => {
     const pc = createPeerConnection();
@@ -213,6 +221,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       }
       
       remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.muted = isDeafened;
       remoteAudioRef.current.play()
         .then(() => console.log("remote audio oynatılıyor"))
         .catch(e => console.error("remote audio oynatma hatası:", e));
@@ -228,7 +237,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
 
     return pc;
-  }, [db, joinedVoiceChannel, callInfo, userId]);
+  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened]);
 
   // Signaling Flow
   useEffect(() => {
@@ -345,6 +354,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
+    setIsDeafened(false);
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   useEffect(() => {
@@ -378,6 +388,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       localStreamRef.current = stream;
       setJoinedVoiceChannel(channel);
       setIsMuted(false);
+      setIsDeafened(false);
       playSoundEffect('join');
       toast({ title: "Sesli Kanala Katılındı", description: `${channel} kanalına bağlandınız.` });
     } catch (error) {
@@ -392,6 +403,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     setIsMuted(newState);
     if (newState) setIsSpeaking(false);
   }, [isMuted]);
+
+  const toggleDeafen = useCallback(() => {
+    const newState = !isDeafened;
+    setIsDeafened(newState);
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = newState;
+    }
+  }, [isDeafened]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground font-body">
@@ -408,6 +427,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         onLeaveVoice={handleLeaveVoiceChannel}
         isMuted={isMuted}
         onToggleMute={toggleMute}
+        isDeafened={isDeafened}
+        onToggleDeafen={toggleDeafen}
         isSpeaking={isSpeaking}
       />
 
