@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
+import { collection } from 'firebase/firestore';
 
 interface RoomSidebarProps {
   rooms: string[];
@@ -12,6 +14,7 @@ interface RoomSidebarProps {
   activeRoom: string;
   onRoomSelect: (room: string) => void;
   userName: string;
+  userId: string;
   onLogout: () => void;
   joinedVoiceChannel: string | null;
   onJoinVoice: (channel: string) => void;
@@ -20,12 +23,41 @@ interface RoomSidebarProps {
   onToggleMute: () => void;
 }
 
+function ChannelUserList({ channelId }: { channelId: string }) {
+  const db = useFirestore();
+  const q = useMemoFirebase(() => {
+    if (!db) return null;
+    return collection(db, 'voiceChannels', channelId, 'presence');
+  }, [db, channelId]);
+  
+  const { data: users } = useCollection(q);
+
+  if (!users || users.length === 0) return null;
+
+  return (
+    <div className="ml-4 space-y-0.5 mt-1">
+      {users.map((user) => (
+        <div key={user.userId} className="flex items-center justify-between group/user py-0.5 px-2 rounded hover:bg-white/5 transition-colors">
+          <div className="flex items-center gap-2">
+            <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground">
+              {user.displayName.charAt(0).toUpperCase()}
+            </div>
+            <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[100px]">{user.displayName}</span>
+          </div>
+          {user.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function RoomSidebar({ 
   rooms, 
   voiceChannels,
   activeRoom, 
   onRoomSelect, 
   userName, 
+  userId,
   onLogout,
   joinedVoiceChannel,
   onJoinVoice,
@@ -36,14 +68,11 @@ export function RoomSidebar({
   return (
     <TooltipProvider>
       <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">
-        {/* Server Header */}
         <div className="h-14 flex items-center px-4 border-b border-sidebar-border shadow-sm">
           <h2 className="font-bold text-lg text-sidebar-foreground tracking-tight truncate">haruncord</h2>
         </div>
 
-        {/* Channels List */}
         <div className="flex-1 overflow-y-auto p-3 space-y-4">
-          {/* Text Channels */}
           <div>
             <div className="text-[11px] font-bold text-muted-foreground uppercase px-2 mb-2 tracking-wider">Metin Kanalları</div>
             <div className="space-y-1">
@@ -66,7 +95,6 @@ export function RoomSidebar({
             </div>
           </div>
 
-          {/* Voice Channels */}
           <div>
             <div className="text-[11px] font-bold text-muted-foreground uppercase px-2 mb-2 tracking-wider">Ses Kanalları</div>
             <div className="space-y-1">
@@ -86,25 +114,13 @@ export function RoomSidebar({
                     {channel}
                   </Button>
                   
-                  {/* Show user under channel if joined */}
-                  {joinedVoiceChannel === channel && (
-                    <div className="ml-8 flex items-center justify-between group/user py-1 pr-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground">
-                          {userName.charAt(0).toUpperCase()}
-                        </div>
-                        <span className="text-sm text-sidebar-foreground/80 font-medium">{userName}</span>
-                      </div>
-                      {isMuted && <MicOff className="w-3.5 h-3.5 text-destructive" />}
-                    </div>
-                  )}
+                  <ChannelUserList channelId={channel} />
                 </div>
               ))}
             </div>
           </div>
         </div>
 
-        {/* Voice Connection Info */}
         {joinedVoiceChannel && (
           <div className="bg-black/10 border-t border-sidebar-border p-3 space-y-3">
             <div className="flex items-center justify-between">
@@ -152,7 +168,6 @@ export function RoomSidebar({
           </div>
         )}
 
-        {/* User Status Bar */}
         <div className="bg-black/20 p-2 flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
             <div className="relative">
