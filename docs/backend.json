@@ -1,0 +1,177 @@
+{
+  "entities": {
+    "VoiceChannel": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "VoiceChannel",
+      "type": "object",
+      "description": "Represents a static voice communication channel within the Kanka Voice application. These channels are predefined and serve as gathering points for users to engage in peer-to-peer voice chat.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the VoiceChannel entity. This would typically be a static, system-defined ID (e.g., 'genel', 'oyun')."
+        },
+        "name": {
+          "type": "string",
+          "description": "The user-facing display name of the voice channel (e.g., 'Genel', 'Oyun', 'Muhabbet')."
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "UserPresence": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UserPresence",
+      "type": "object",
+      "description": "Tracks a user's active presence in a specific voice channel. This entity is crucial for the WebRTC signaling process, allowing users in a channel to discover and connect with each other, and for displaying 'online' users in the UI.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this UserPresence record. This could be a combination of userId and voiceChannelId or a generated UUID for the session."
+        },
+        "userId": {
+          "type": "string",
+          "description": "The unique local identifier for the user, typically generated and stored in localStorage upon login."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "The display name of the user as entered and stored in localStorage."
+        },
+        "voiceChannelId": {
+          "type": "string",
+          "description": "Reference to the VoiceChannel the user is currently present in. (Relationship: VoiceChannel 1:N UserPresence)"
+        },
+        "lastSeen": {
+          "type": "string",
+          "description": "Timestamp indicating the last time this presence record was updated, useful for identifying and cleaning up stale or disconnected users.",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "displayName",
+        "voiceChannelId",
+        "lastSeen"
+      ]
+    },
+    "WebRTCSignal": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WebRTCSignal",
+      "type": "object",
+      "description": "Stores transient WebRTC signaling messages (offers, answers, ICE candidates) exchanged between users via Firestore to establish and maintain peer-to-peer connections for voice chat. These messages are typically short-lived.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the WebRTCSignal entity. This will be a Firestore document ID or a generated UUID."
+        },
+        "senderUserId": {
+          "type": "string",
+          "description": "The unique local identifier of the user who initiated and sent this signaling message."
+        },
+        "receiverUserId": {
+          "type": "string",
+          "description": "The unique local identifier of the user who is the intended recipient of this signaling message."
+        },
+        "voiceChannelId": {
+          "type": "string",
+          "description": "Reference to the VoiceChannel where this signaling exchange is taking place. Ensures signals are scoped to the correct channel. (Relationship: VoiceChannel 1:N WebRTCSignal)"
+        },
+        "signalType": {
+          "type": "string",
+          "description": "The type of WebRTC signal being sent (e.g., 'offer', 'answer', 'iceCandidate')."
+        },
+        "signalData": {
+          "type": "string",
+          "description": "The actual payload of the WebRTC signaling message, typically a stringified JSON object containing SDP or ICE candidate information."
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "The date and time when the signaling message was created, useful for ordering and potential cleanup of old signals.",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "senderUserId",
+        "receiverUserId",
+        "voiceChannelId",
+        "signalType",
+        "signalData",
+        "timestamp"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "voiceChannels/{voiceChannelId}",
+        "definition": {
+          "entityName": "VoiceChannel",
+          "schema": {
+            "$ref": "#/backend/entities/VoiceChannel"
+          },
+          "description": "Stores static, predefined voice communication channels. This collection is globally readable, allowing any user to discover available channels.",
+          "params": [
+            {
+              "name": "voiceChannelId",
+              "description": "The unique identifier for the voice channel (e.g., 'genel', 'oyun')."
+            }
+          ]
+        }
+      },
+      {
+        "path": "voiceChannels/{voiceChannelId}/presence/{userId}",
+        "definition": {
+          "entityName": "UserPresence",
+          "schema": {
+            "$ref": "#/backend/entities/UserPresence"
+          },
+          "description": "Tracks a user's active presence in a specific voice channel. Documents include `userId`, `displayName`, `voiceChannelId`, and `lastSeen`. The `userId` in the path corresponds to the `userId` in the document for ownership. Includes denormalized `userId` and `voiceChannelId` for Authorization Independence and QAP-compliant listing.",
+          "params": [
+            {
+              "name": "voiceChannelId",
+              "description": "The unique identifier of the voice channel the user is present in."
+            },
+            {
+              "name": "userId",
+              "description": "The unique local identifier for the user (from localStorage)."
+            }
+          ]
+        }
+      },
+      {
+        "path": "voiceChannels/{voiceChannelId}/users/{receiverUserId}/webrtcSignals/{signalId}",
+        "definition": {
+          "entityName": "WebRTCSignal",
+          "schema": {
+            "$ref": "#/backend/entities/WebRTCSignal"
+          },
+          "description": "Stores transient WebRTC signaling messages (offers, answers, ICE candidates) for a specific `receiverUserId` within a `voiceChannelId`. This acts as a 'mailbox' for the receiver. Documents include `senderUserId`, `receiverUserId`, `voiceChannelId`, `signalType`, `signalData`, and `timestamp`. The `receiverUserId` in the path ensures that only the intended recipient can read their signals. `senderUserId` is denormalized in the document for write authorization. `voiceChannelId` is denormalized in the path and document for Authorization Independence and scoping.",
+          "params": [
+            {
+              "name": "voiceChannelId",
+              "description": "The unique identifier of the voice channel where the signaling exchange is taking place."
+            },
+            {
+              "name": "receiverUserId",
+              "description": "The unique local identifier of the user who is the intended recipient of this signaling message."
+            },
+            {
+              "name": "signalId",
+              "description": "A unique identifier for this specific WebRTC signaling message."
+            }
+          ]
+        }
+      }
+    ],
+    "reasoning": "The recommended Firestore structure is designed to support real-time WebRTC signaling and user presence tracking while strictly adhering to the specified design principles, particularly Authorization Independence given the absence of Firebase Authentication.The core approach involves segmenting data by `voiceChannelId` and further by `userId` or `receiverUserId` within those channels.\n\n**Authorization Independence (CRITICAL):**\nSince Firebase Authentication is explicitly forbidden, `request.auth.uid` will not be available in Firestore security rules. This is a critical constraint that shifts the burden of identity verification. To still achieve a semblance of authorization independence and debuggable rules, the design assumes that the client-provided `userId` (generated and stored in `localStorage`) will be *the* identifier that security rules can compare against fields in documents or path parameters. For this to work in practice, the application would likely need to pass this `userId` with every Firestore request in a way that rules can access it (e.g., through a custom token or App Check with custom claims, though the prompt implies a simpler setup). Assuming this `current_user_id` is available in rules:\n\n1.  **`voiceChannels/{voiceChannelId}/presence/{userId}`:** The `userId` is part of the document's path *and* explicitly stored within the `UserPresence` document itself (`definition.params.userId` and `UserPresence.userId`). The `voiceChannelId` is also in the path and document. This denormalization means that rules can directly verify ownership (`request.params.userId == current_user_id`) without needing to fetch a parent document. Any user wanting to update their presence simply targets their own path.\n2.  **`voiceChannels/{voiceChannelId}/users/{receiverUserId}/webrtcSignals/{signalId}`:** The `receiverUserId` is crucial and is embedded in the path (`definition.params.receiverUserId`). This creates a dedicated 'mailbox' subcollection for each user within a channel. `senderUserId` is also explicitly stored in the `WebRTCSignal` document. This denormalization allows rules to check `request.params.receiverUserId == current_user_id` for read access (ensuring a user can only read their own signals) and `request.resource.data.senderUserId == current_user_id` for write access (preventing sender spoofing). Both checks are independent of parent document lookups.\n\n**QAPs (Rules are not Filters):**\nThe structure inherently supports secure and efficient `list` operations (Query-Applies-Permissions):\n\n1.  **`/voiceChannels/{voiceChannelId}`:** This collection is public/read-only for all users (or all users with a `current_user_id`). `list` operations will retrieve all predefined channels without needing rule-based filtering, satisfying QAP.\n2.  **`/voiceChannels/{voiceChannelId}/presence`:** When a user joins a `voiceChannelId`, they will query this subcollection to see who else is present. The `voiceChannelId` in the path directly scopes the query to the relevant channel. Rules can then permit `list` access if the `current_user_id` also has a presence record in that channel (meaning they are a participant). This allows a `list` to return exactly the set of users allowed, without server-side filtering on non-indexed fields.\n3.  **`/voiceChannels/{voiceChannelId}/users/{receiverUserId}/webrtcSignals`:** A user subscribes to their own signaling mailbox to receive messages. The query `db.collection('voiceChannels/{channelId}/users/{currentUserId}/webrtcSignals')` is naturally scoped by both `channelId` and `currentUserId`. Rules would restrict read access to `request.params.receiverUserId == current_user_id`. This means the query itself defines the scope, and the rules confirm the permission without needing to filter the results, perfectly aligning with QAPs."
+  }
+}
