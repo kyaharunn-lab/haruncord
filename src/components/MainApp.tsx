@@ -2,17 +2,8 @@
 
 import { useState } from 'react';
 import { RoomSidebar } from './RoomSidebar';
-import { Hash, Users, MessageSquare } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Hash, MessageSquare } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { cn } from '@/lib/utils';
-
-const SAMPLE_USERS = [
-  { name: 'Arda', status: 'Sohbet ediyor', color: 'bg-red-400' },
-  { name: 'Zeynep', status: 'Oyun oynuyor', color: 'bg-blue-400' },
-  { name: 'Mert', status: 'Çevrimiçi', color: 'bg-green-400' },
-  { name: 'Selin', status: 'Müzik dinliyor', color: 'bg-purple-400' },
-];
 
 interface MainAppProps {
   userName: string;
@@ -41,9 +32,6 @@ export function MainApp({ userName, onLogout }: MainAppProps) {
             <Hash className="w-5 h-5 text-muted-foreground" />
             <span className="text-foreground">{activeRoom}</span>
           </div>
-          <div className="flex items-center gap-4 text-muted-foreground">
-            <Badge variant="secondary" className="bg-black/20 text-[10px] py-0 px-2">Beta</Badge>
-          </div>
         </header>
 
         <div className="flex flex-1 overflow-hidden">
@@ -66,7 +54,7 @@ export function MainApp({ userName, onLogout }: MainAppProps) {
             <ScrollArea className="h-full">
               <div className="p-4 space-y-6">
                 <div>
-                  <h3 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest px-2 mb-3">Çevrimiçi — {SAMPLE_USERS.length + 1}</h3>
+                  <h3 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest px-2 mb-3">Çevrimiçi — 1</h3>
                   <div className="space-y-1">
                     {/* Current User */}
                     <div className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
@@ -78,25 +66,9 @@ export function MainApp({ userName, onLogout }: MainAppProps) {
                       </div>
                       <div className="flex flex-col min-w-0">
                         <span className="text-sm font-medium text-accent truncate">{userName}</span>
-                        <span className="text-[10px] text-muted-foreground truncate leading-none">Sende durum yok</span>
+                        <span className="text-[10px] text-muted-foreground truncate leading-none">Çevrimiçi</span>
                       </div>
                     </div>
-
-                    {/* Fake Users */}
-                    {SAMPLE_USERS.map((user) => (
-                      <div key={user.name} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group opacity-80 hover:opacity-100">
-                        <div className="relative">
-                          <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-white font-bold", user.color)}>
-                            {user.name.charAt(0).toUpperCase()}
-                          </div>
-                          <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full"></div>
-                        </div>
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-sm font-medium text-foreground truncate">{user.name}</span>
-                          <span className="text-[10px] text-muted-foreground truncate leading-none">{user.status}</span>
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 </div>
               </div>
