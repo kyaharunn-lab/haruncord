@@ -33,6 +33,11 @@ service cloud.firestore {
       match /users/{receiverUserId}/webrtcSignals/{signalId} { allow read, write: if true; }
     }
 
+    // Metin Kanalları Sistemi
+    match /textChannels/{channelId}/messages/{messageId} {
+      allow read, write: if true;
+    }
+
     match /rooms/{roomId} {
       allow read, write: if true;
     }
