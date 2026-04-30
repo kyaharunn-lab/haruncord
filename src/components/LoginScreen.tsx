@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useState } from 'react';
@@ -5,19 +6,22 @@ import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/componen
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Headphones } from 'lucide-react';
+import { Headphones, ShieldCheck, User, Shield } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { UserRole } from '@/app/page';
 
 interface LoginScreenProps {
-  onLogin: (name: string) => void;
+  onLogin: (name: string, role: UserRole) => void;
 }
 
 export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [name, setName] = useState('');
+  const [role, setRole] = useState<UserRole>('member');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (name.trim()) {
-      onLogin(name.trim());
+      onLogin(name.trim(), role);
     }
   };
 
@@ -30,7 +34,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
           </div>
           <div>
             <CardTitle className="text-3xl font-bold tracking-tight text-foreground font-headline">Kanka Voice</CardTitle>
-            <p className="text-muted-foreground mt-2">Sohbete katılmak için bir isim seç.</p>
+            <p className="text-muted-foreground mt-2">Sohbete katılmak için bir isim ve rol seç.</p>
           </div>
         </CardHeader>
         <form onSubmit={handleSubmit}>
@@ -46,6 +50,34 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
                 className="bg-background border-border focus:ring-primary h-12"
                 required
               />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Rolün</Label>
+              <Select value={role} onValueChange={(val) => setRole(val as UserRole)}>
+                <SelectTrigger className="bg-background border-border h-12">
+                  <SelectValue placeholder="Rol seç" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="member" className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <User className="w-4 h-4" />
+                      <span>Üye</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="mod" className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <Shield className="w-4 h-4" />
+                      <span>Moderatör</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="admin" className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>Admin</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </CardContent>
           <CardFooter className="pb-8">

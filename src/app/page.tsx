@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useState, useEffect } from 'react';
@@ -6,19 +7,26 @@ import { MainApp } from '@/components/MainApp';
 import { useAuth } from '@/firebase';
 import { signInAnonymously } from 'firebase/auth';
 
+export type UserRole = 'admin' | 'mod' | 'member';
+
 export default function Home() {
   const [userName, setUserName] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<UserRole>('member');
   const [isHydrated, setIsHydrated] = useState(false);
   const auth = useAuth();
 
   useEffect(() => {
-    // Initial check for stored data
     const storedName = localStorage.getItem('kanka_voice_user');
+    const storedRole = localStorage.getItem('kanka_voice_role') as UserRole;
     let storedId = localStorage.getItem('kanka_voice_user_id');
     
     if (storedName) {
       setUserName(storedName);
+    }
+    
+    if (storedRole) {
+      setUserRole(storedRole);
     }
     
     if (!storedId) {
@@ -27,10 +35,8 @@ export default function Home() {
     }
     setUserId(storedId);
 
-    // Sign in anonymously to satisfy security rules
     if (auth) {
       signInAnonymously(auth).catch((err) => {
-        // Hata durumunda sadece konsola sessizce yazdırıyoruz
         console.error("Anonim giriş hatası:", err);
       });
     }
@@ -38,22 +44,32 @@ export default function Home() {
     setIsHydrated(true);
   }, [auth]);
 
-  const handleLogin = (name: string) => {
+  const handleLogin = (name: string, role: UserRole) => {
     localStorage.setItem('kanka_voice_user', name);
+    localStorage.setItem('kanka_voice_role', role);
     setUserName(name);
+    setUserRole(role);
   };
 
   const handleLogout = () => {
     localStorage.removeItem('kanka_voice_user');
+    localStorage.removeItem('kanka_voice_role');
     setUserName(null);
+    setUserRole('member');
   };
 
-  // Prevent hydration mismatch
   if (!isHydrated) return null;
 
   if (!userName || !userId) {
     return <LoginScreen onLogin={handleLogin} />;
   }
 
-  return <MainApp userName={userName} userId={userId} onLogout={handleLogout} />;
+  return (
+    <MainApp 
+      userName={userName} 
+      userId={userId} 
+      userRole={userRole} 
+      onLogout={handleLogout} 
+    />
+  );
 }

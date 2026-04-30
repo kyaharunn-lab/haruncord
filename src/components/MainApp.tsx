@@ -4,13 +4,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { RoomSidebar } from "./RoomSidebar";
-import { Hash, MessageSquare, Send } from "lucide-react";
+import { Hash, MessageSquare, Plus, Trash2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit, setDoc, deleteDoc } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   deleteDocumentNonBlocking,
@@ -29,24 +29,27 @@ import {
   type AudioSettings,
 } from "@/lib/webrtc";
 import { AudioSettingsDialog } from "./AudioSettingsDialog";
+import { UserRole } from "@/app/page";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
 interface MainAppProps {
   userName: string;
   userId: string;
+  userRole: UserRole;
   onLogout: () => void;
 }
 
-export function MainApp({ userName, userId, onLogout }: MainAppProps) {
-  const rooms = ["Genel", "Oyun", "Muhabbet"];
-  const voiceChannels = ["Test Ses", "Oyun Ses", "Muhabbet Ses"];
-
-  const [activeRoom, setActiveRoom] = useState(rooms[0]);
+export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) {
+  const [activeRoom, setActiveRoom] = useState("Genel");
   const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [remoteIsSpeaking, setRemoteIsSpeaking] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAddChannelOpen, setIsAddChannelOpen] = useState(false);
+  const [newChannelName, setNewChannelName] = useState("");
+  const [newChannelType, setNewChannelType] = useState<"text" | "voice">("text");
   const [messageText, setMessageText] = useState("");
 
   const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
@@ -67,6 +70,59 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { toast } = useToast();
   const db = useFirestore();
+
+  // --- Dinamik Kanallar ---
+  const roomsQuery = useMemoFirebase(() => db ? query(collection(db, "textChannels"), limit(20)) : null, [db]);
+  const { data: roomsData } = useCollection(roomsQuery);
+  const rooms = useMemo(() => roomsData?.map(r => r.id) || ["Genel"], [roomsData]);
+
+  const voiceChannelsQuery = useMemoFirebase(() => db ? query(collection(db, "voiceChannels"), limit(20)) : null, [db]);
+  const { data: voiceChannelsData } = useCollection(voiceChannelsQuery);
+  const voiceChannels = useMemo(() => voiceChannelsData?.map(v => v.id) || ["Genel Ses"], [voiceChannelsData]);
+
+  // Varsayılan kanalları oluştur (ilk kez açılıyorsa)
+  useEffect(() => {
+    if (db && roomsData?.length === 0) {
+      ["Genel", "Oyun", "Muhabbet"].forEach(id => {
+        setDoc(doc(db, "textChannels", id), { createdAt: serverTimestamp() });
+      });
+    }
+    if (db && voiceChannelsData?.length === 0) {
+      ["Genel Ses", "Oyun Ses", "Muhabbet Ses"].forEach(id => {
+        setDoc(doc(db, "voiceChannels", id), { name: id, createdAt: serverTimestamp() });
+      });
+    }
+  }, [db, roomsData, voiceChannelsData]);
+
+  const handleAddChannel = async () => {
+    if (!newChannelName.trim() || !db || userRole !== 'admin') return;
+    const cleanName = newChannelName.trim();
+    
+    try {
+      if (newChannelType === "text") {
+        await setDoc(doc(db, "textChannels", cleanName), { createdAt: serverTimestamp() });
+      } else {
+        await setDoc(doc(db, "voiceChannels", cleanName), { name: cleanName, createdAt: serverTimestamp() });
+      }
+      setIsAddChannelOpen(false);
+      setNewChannelName("");
+      toast({ title: "Kanal Oluşturuldu", description: `${cleanName} başarıyla eklendi.` });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteChannel = async (id: string, type: "text" | "voice") => {
+    if (!db || userRole !== 'admin') return;
+    try {
+      await deleteDoc(doc(db, type === "text" ? "textChannels" : "voiceChannels", id));
+      if (type === "text" && activeRoom === id) setActiveRoom("Genel");
+      if (type === "voice" && joinedVoiceChannel === id) handleLeaveVoiceChannel();
+      toast({ title: "Kanal Silindi", description: `${id} başarıyla kaldırıldı.` });
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   // --- Mesajlaşma Mantığı ---
   const messagesQuery = useMemoFirebase(() => {
@@ -101,24 +157,17 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     setMessageText("");
   };
 
-  // --- Sesli Sohbet Mantığı ---
+  // --- Sesli Sohbet Mantığı (WebRTC) ---
   useEffect(() => {
     const savedAudio = localStorage.getItem("kanka_voice_audio_settings");
     if (savedAudio) {
       try {
         setAudioSettings(prev => ({ ...prev, ...JSON.parse(savedAudio) }));
-      } catch (e) {
-        console.error("Ses ayarları yüklenemedi:", e);
-      }
+      } catch (e) { console.error(e); }
     }
-
     const savedVolumes = localStorage.getItem("kanka_user_volumes");
     if (savedVolumes) {
-      try {
-        setUserVolumes(JSON.parse(savedVolumes));
-      } catch (e) {
-        console.error("Ses seviyeleri yüklenemedi:", e);
-      }
+      try { setUserVolumes(JSON.parse(savedVolumes)); } catch (e) { console.error(e); }
     }
   }, []);
 
@@ -130,42 +179,20 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     });
   }, []);
 
-  useEffect(() => {
-    if (remoteAudioRef.current && joinedVoiceChannel) {
-      const targetUserInCall = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
-      if (targetUserInCall) {
-        const volume = userVolumes[targetUserInCall] ?? 100;
-        remoteAudioRef.current.volume = volume / 100;
-      }
-    }
-  }, [userVolumes, joinedVoiceChannel]);
-
-  useEffect(() => {
-    if (remoteAudioRef.current && audioSettings.outputDeviceId) {
-      setAudioOutputDevice(remoteAudioRef.current, audioSettings.outputDeviceId);
-    }
-  }, [audioSettings.outputDeviceId]);
-
   const handleSettingsChange = useCallback(async (newSettings: AudioSettings & { outputDeviceId?: string }) => {
     setAudioSettings(newSettings);
-    
     if (joinedVoiceChannel && localStreamRef.current) {
       const oldTracks = localStreamRef.current.getTracks();
       const newStream = await getLocalAudioStream(newSettings);
-      
       if (newStream) {
         oldTracks.forEach(t => t.stop());
         localStreamRef.current = newStream;
         newStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
-
         if (peerConnectionRef.current) {
           const senders = peerConnectionRef.current.getSenders();
           const audioSender = senders.find(s => s.track?.kind === 'audio');
           const newTrack = newStream.getAudioTracks()[0];
-          
-          if (audioSender && newTrack) {
-            audioSender.replaceTrack(newTrack);
-          }
+          if (audioSender && newTrack) audioSender.replaceTrack(newTrack);
         }
       }
     }
@@ -176,14 +203,11 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const oscillator = audioCtx.createOscillator();
       const gainNode = audioCtx.createGain();
-
       oscillator.connect(gainNode);
       gainNode.connect(audioCtx.destination);
-
       const now = audioCtx.currentTime;
       gainNode.gain.setValueAtTime(0, now);
       gainNode.gain.linearRampToValueAtTime(0.05, now + 0.05);
-
       if (type === 'join') {
         oscillator.type = 'sine';
         oscillator.frequency.setValueAtTime(500, now);
@@ -193,13 +217,10 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         oscillator.frequency.setValueAtTime(700, now);
         oscillator.frequency.exponentialRampToValueAtTime(500, now + 0.15);
       }
-
       gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
       oscillator.start(now);
       oscillator.stop(now + 0.3);
-    } catch (err) {
-      console.warn("Ses efekti çalınamadı:", err);
-    }
+    } catch (err) {}
   }, []);
 
   // Lokal Konuşma Analizi
@@ -208,297 +229,139 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       setIsSpeaking(false);
       return;
     }
-
     let audioContext: AudioContext | null = null;
     let analyser: AnalyserNode | null = null;
     let animationId = 0;
-    let lastSpeakState = false;
-
     try {
       audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       analyser = audioContext.createAnalyser();
       const source = audioContext.createMediaStreamSource(localStreamRef.current);
       source.connect(analyser);
       analyser.fftSize = 256;
-
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const checkVolume = () => {
         if (!analyser) return;
         analyser.getByteFrequencyData(dataArray);
         const sum = dataArray.reduce((total, value) => total + value, 0);
-        const average = sum / bufferLength;
         const threshold = (audioSettings.micSensitivity ?? 0.02) * 255;
-        const speaking = average > threshold;
-
-        if (speaking !== lastSpeakState) {
-          setIsSpeaking(speaking);
-          lastSpeakState = speaking;
-        }
+        setIsSpeaking((sum / dataArray.length) > threshold);
         animationId = requestAnimationFrame(checkVolume);
       };
       checkVolume();
-    } catch (err) {
-      console.error("Ses analizi başlatılamadı:", err);
-    }
-
+    } catch (err) {}
     return () => {
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext) audioContext.close();
     };
   }, [joinedVoiceChannel, isMuted, audioSettings.micSensitivity]);
 
-  // Uzak Konuşma Analizi (Overlay için)
-  useEffect(() => {
-    if (!remoteAudioRef.current?.srcObject || !joinedVoiceChannel || isDeafened) {
-      setRemoteIsSpeaking(false);
-      return;
-    }
-
-    let audioContext: AudioContext | null = null;
-    let analyser: AnalyserNode | null = null;
-    let animationId = 0;
-    let lastSpeakState = false;
-
-    try {
-      const stream = remoteAudioRef.current.srcObject as MediaStream;
-      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      analyser = audioContext.createAnalyser();
-      const source = audioContext.createMediaStreamSource(stream);
-      source.connect(analyser);
-      analyser.fftSize = 256;
-
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-
-      const checkVolume = () => {
-        if (!analyser) return;
-        analyser.getByteFrequencyData(dataArray);
-        const sum = dataArray.reduce((total, value) => total + value, 0);
-        const average = sum / bufferLength;
-        const speaking = average > 10;
-
-        if (speaking !== lastSpeakState) {
-          setRemoteIsSpeaking(speaking);
-          lastSpeakState = speaking;
-        }
-        animationId = requestAnimationFrame(checkVolume);
-      };
-      checkVolume();
-    } catch (err) {
-      console.error("Uzak ses analizi başlatılamadı:", err);
-    }
-
-    return () => {
-      if (animationId) cancelAnimationFrame(animationId);
-      if (audioContext) audioContext.close();
-    };
-  }, [joinedVoiceChannel, isDeafened, remoteAudioRef.current?.srcObject]);
-
-  // Kendi varlık dokümanını izle (Atılma durumunu tespit etmek için)
   const localPresenceRef = useMemoFirebase(() => {
     if (!db || !joinedVoiceChannel || !userId) return null;
     return doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
   }, [db, joinedVoiceChannel, userId]);
-
   const { data: localPresenceData } = useDoc(localPresenceRef);
 
   useEffect(() => {
     if (localPresenceData?.isKicked && joinedVoiceChannel) {
       handleLeaveVoiceChannel();
-      toast({
-        variant: "destructive",
-        title: "Kanaldan Atıldın",
-        description: "Bir yönetici tarafından ses kanalından çıkarıldın.",
-      });
+      toast({ variant: "destructive", title: "Kanaldan Atıldın", description: "Bir yönetici tarafından ses kanalından çıkarıldın." });
     }
   }, [localPresenceData?.isKicked, joinedVoiceChannel]);
 
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !userId) return;
-
     const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
-    
     const updatePresence = () => {
       setDocumentNonBlocking(presenceRef, {
-        userId,
-        displayName: userName,
-        voiceChannelId: joinedVoiceChannel,
-        lastSeen: new Date().toISOString(),
-        isMuted,
-        id: userId,
+        userId, displayName: userName, voiceChannelId: joinedVoiceChannel,
+        lastSeen: new Date().toISOString(), isMuted, id: userId,
       }, { merge: true });
     };
-
     updatePresence();
     const heartbeat = setInterval(updatePresence, 5000);
-
-    const handleUnload = () => {
-      deleteDocumentNonBlocking(presenceRef);
-    };
-    window.addEventListener("beforeunload", handleUnload);
-
     return () => {
       clearInterval(heartbeat);
-      window.removeEventListener("beforeunload", handleUnload);
       deleteDocumentNonBlocking(presenceRef);
-      console.log("presence temizlendi");
     };
   }, [db, joinedVoiceChannel, userId, userName, isMuted]);
 
-  const presenceQuery = useMemoFirebase(() => {
-    if (!db || !joinedVoiceChannel) return null;
-    return collection(db, "voiceChannels", joinedVoiceChannel, "presence");
-  }, [db, joinedVoiceChannel]);
+  const presenceQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
   const { data: rawChannelUsers } = useCollection(presenceQuery);
-
   const channelUsers = useMemo(() => {
     if (!rawChannelUsers) return null;
     const now = Date.now();
-    return rawChannelUsers.filter(u => {
-      if (!u.lastSeen) return false;
-      const lastSeenDate = new Date(u.lastSeen);
-      return now - lastSeenDate.getTime() < 15000;
-    });
+    return rawChannelUsers.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
   }, [rawChannelUsers]);
 
-  const targetUser = useMemo(() => {
-    if (!channelUsers) return null;
-    return channelUsers.find(u => u.userId !== userId) || null;
-  }, [channelUsers, userId]);
+  const targetUser = useMemo(() => channelUsers?.find(u => u.userId !== userId) || null, [channelUsers, userId]);
 
   const callInfo = useMemo(() => {
     if (!targetUser || !userId) return null;
     const ids = [userId, targetUser.userId].sort();
-    return {
-      callId: ids.join('_'),
-      offererId: ids[0],
-      answererId: ids[1],
-      isOfferer: userId === ids[0]
-    };
+    return { callId: ids.join('_'), offererId: ids[0], answererId: ids[1], isOfferer: userId === ids[0] };
   }, [targetUser, userId]);
 
-  const callDocRef = useMemoFirebase(() => {
-    if (!db || !joinedVoiceChannel || !callInfo) return null;
-    return doc(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId);
-  }, [db, joinedVoiceChannel, callInfo]);
-
+  const callDocRef = useMemoFirebase(() => db && joinedVoiceChannel && callInfo ? doc(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId) : null, [db, joinedVoiceChannel, callInfo]);
   const { data: callData } = useDoc(callDocRef);
 
-  const candidatesQuery = useMemoFirebase(() => {
-    if (!db || !joinedVoiceChannel || !callInfo) return null;
-    return collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates");
-  }, [db, joinedVoiceChannel, callInfo]);
-
+  const candidatesQuery = useMemoFirebase(() => db && joinedVoiceChannel && callInfo ? collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates") : null, [db, joinedVoiceChannel, callInfo]);
   const { data: remoteCandidates } = useCollection(candidatesQuery);
 
   const setupPeerConnection = useCallback(() => {
     const pc = createPeerConnection();
     if (!pc) return null;
-
     pc.onicecandidate = (event) => {
       if (event.candidate && db && joinedVoiceChannel && callInfo) {
         const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates");
-        addDocumentNonBlocking(candsRef, {
-          userId,
-          candidate: event.candidate.toJSON(),
-          createdAt: serverTimestamp(),
-        });
+        addDocumentNonBlocking(candsRef, { userId, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
       }
     };
-
     pc.ontrack = (event) => {
-      const remoteStream = event.streams[0];
-      if (!remoteStream) return;
-
       if (!remoteAudioRef.current) {
         const audio = document.createElement("audio");
         audio.autoplay = true;
         audio.playsInline = true;
         document.body.appendChild(audio);
         remoteAudioRef.current = audio;
-        
-        if (audioSettings.outputDeviceId) {
-          setAudioOutputDevice(audio, audioSettings.outputDeviceId);
-        }
       }
-      
-      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.srcObject = event.streams[0];
       remoteAudioRef.current.muted = isDeafened;
-      
-      const targetUserId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
-      if (targetUserId) {
-        const volume = userVolumes[targetUserId] ?? 100;
-        remoteAudioRef.current.volume = volume / 100;
-      }
-
-      remoteAudioRef.current.play().catch(e => console.error("remote audio oynatma hatası:", e));
+      const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
+      if (targetId) remoteAudioRef.current.volume = (userVolumes[targetId] ?? 100) / 100;
+      remoteAudioRef.current.play().catch(() => {});
     };
-
-    if (localStreamRef.current) {
-      addLocalTracks(pc, localStreamRef.current);
-    }
-
+    if (localStreamRef.current) addLocalTracks(pc, localStreamRef.current);
     return pc;
-  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, audioSettings.outputDeviceId, userVolumes]);
+  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, userVolumes]);
 
   useEffect(() => {
     const handleSignaling = async () => {
       if (!callInfo || !callDocRef || !db) return;
-
       if (callInfo.isOfferer) {
         if (!peerConnectionRef.current) {
           const pc = setupPeerConnection();
           if (!pc) return;
           peerConnectionRef.current = pc;
-          
           const offer = await createOffer(pc);
-          if (offer) {
-            setDocumentNonBlocking(callDocRef, {
-              callId: callInfo.callId,
-              offererId: callInfo.offererId,
-              answererId: callInfo.answererId,
-              offer: { type: offer.type, sdp: offer.sdp },
-              createdAt: serverTimestamp(),
-            }, { merge: true });
-            console.log("offer firestore yazıldı");
-          }
+          if (offer) setDocumentNonBlocking(callDocRef, { ...callInfo, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
         }
-
-        if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") {
-          await setRemoteDescription(peerConnectionRef.current, callData.answer);
-          console.log("answer uygulandı");
-        }
-      } 
-      else {
-        if (callData?.offer && !peerConnectionRef.current) {
-          const pc = setupPeerConnection();
-          if (!pc) return;
-          peerConnectionRef.current = pc;
-
-          const answer = await createAnswer(pc, callData.offer);
-          if (answer) {
-            setDocumentNonBlocking(callDocRef, {
-              answer: { type: answer.type, sdp: answer.sdp },
-              answererId: userId,
-            }, { merge: true });
-            console.log("answer firestore yazıldı");
-          }
-        }
+        if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") await setRemoteDescription(peerConnectionRef.current, callData.answer);
+      } else if (callData?.offer && !peerConnectionRef.current) {
+        const pc = setupPeerConnection();
+        if (!pc) return;
+        peerConnectionRef.current = pc;
+        const answer = await createAnswer(pc, callData.offer);
+        if (answer) setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
       }
     };
-
     handleSignaling();
   }, [callInfo, callData, callDocRef, db, setupPeerConnection, userId]);
 
   useEffect(() => {
     if (!remoteCandidates || !peerConnectionRef.current) return;
-    const pc = peerConnectionRef.current;
-
     remoteCandidates.forEach(doc => {
       if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id)) {
-        addIceCandidate(pc, doc.candidate);
+        addIceCandidate(peerConnectionRef.current!, doc.candidate);
         processedIceCandidatesRef.current.add(doc.id);
       }
     });
@@ -506,161 +369,62 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (joinedVoiceChannel) playSoundEffect('leave');
-
-    if (peerConnectionRef.current) {
-      closePeerConnection(peerConnectionRef.current);
-      peerConnectionRef.current = null;
-    }
-    
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(t => t.stop());
-      localStreamRef.current = null;
-    }
-
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.pause();
-      remoteAudioRef.current.srcObject = null;
-    }
-
+    if (peerConnectionRef.current) closePeerConnection(peerConnectionRef.current);
+    peerConnectionRef.current = null;
+    if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
     if (db && joinedVoiceChannel && userId) {
-      const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
-      deleteDocumentNonBlocking(presenceRef);
-      console.log("presence temizlendi");
-
-      try {
-        const callsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls");
-        const qOfferer = query(callsRef, where("offererId", "==", userId));
-        const qAnswerer = query(callsRef, where("answererId", "==", userId));
-
-        const [offererSnap, answererSnap] = await Promise.all([
-          getDocs(qOfferer),
-          getDocs(qAnswerer)
-        ]);
-
-        const batch = writeBatch(db);
-        [...offererSnap.docs, ...answererSnap.docs].forEach(d => {
-          batch.delete(d.ref);
-          console.log("call temizlendi");
-        });
-        await batch.commit();
-      } catch (e) {
-        console.warn("Call temizlenirken hata oluştu:", e);
-      }
+      deleteDocumentNonBlocking(doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId));
+      const q1 = query(collection(db, "voiceChannels", joinedVoiceChannel, "calls"), where("offererId", "==", userId));
+      const q2 = query(collection(db, "voiceChannels", joinedVoiceChannel, "calls"), where("answererId", "==", userId));
+      const snaps = await Promise.all([getDocs(q1), getDocs(q2)]);
+      const batch = writeBatch(db);
+      [...snaps[0].docs, ...snaps[1].docs].forEach(d => batch.delete(d.ref));
+      await batch.commit();
     }
-
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
-    setRemoteIsSpeaking(false);
-    setIsDeafened(false);
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
-
-    if (db && userId) {
-      try {
-        const callsRef = collection(db, "voiceChannels", channel, "calls");
-        const qUser = query(callsRef, where("offererId", "==", userId));
-        const qUser2 = query(callsRef, where("answererId", "==", userId));
-        const [snap1, snap2] = await Promise.all([getDocs(qUser), getDocs(qUser2)]);
-        const batch = writeBatch(db);
-        [...snap1.docs, ...snap2.docs].forEach(d => batch.delete(d.ref));
-        await batch.commit();
-      } catch (e) {
-        console.warn("Ön temizlik başarısız:", e);
-      }
-    }
-
     try {
       const stream = await getLocalAudioStream(audioSettings);
-      if (!stream) throw new Error("Mikrofon izni gerekli.");
+      if (!stream) throw new Error();
       localStreamRef.current = stream;
       setJoinedVoiceChannel(channel);
       setIsMuted(false);
       setIsDeafened(false);
       playSoundEffect('join');
-      toast({ title: "Sesli Kanala Katılındı", description: `${channel} kanalına bağlandınız.` });
-    } catch (error) {
-      toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." });
-    }
-  }, [toast, joinedVoiceChannel, handleLeaveVoiceChannel, db, userId, playSoundEffect, audioSettings]);
-
-  const toggleMute = useCallback(() => {
-    if (!localStreamRef.current) return;
-    const newState = !isMuted;
-    localStreamRef.current.getAudioTracks().forEach(t => t.enabled = !newState);
-    setIsMuted(newState);
-    if (newState) setIsSpeaking(false);
-  }, [isMuted]);
-
-  const toggleDeafen = useCallback(() => {
-    const newState = !isDeafened;
-    setIsDeafened(newState);
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.muted = newState;
-    }
-  }, [isDeafened]);
+    } catch (error) { toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." }); }
+  }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, playSoundEffect, toast]);
 
   const handleKickUser = useCallback((targetId: string) => {
-    if (!db || !joinedVoiceChannel) return;
-    const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", targetId);
-    setDocumentNonBlocking(presenceRef, { isKicked: true }, { merge: true });
+    if (!db || !joinedVoiceChannel || (userRole !== 'admin' && userRole !== 'mod')) return;
+    setDocumentNonBlocking(doc(db, "voiceChannels", joinedVoiceChannel, "presence", targetId), { isKicked: true }, { merge: true });
     toast({ title: "Kullanıcı Atıldı", description: "Kullanıcı ses kanalından çıkarıldı." });
-  }, [db, joinedVoiceChannel, toast]);
+  }, [db, joinedVoiceChannel, toast, userRole]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground font-body relative">
-      {/* Oyun Modu Overlay Paneli */}
+    <div className="flex h-screen overflow-hidden bg-background text-foreground relative">
+      {/* Oyun Modu Overlay */}
       {joinedVoiceChannel && (
         <div className="absolute top-4 right-4 z-50 pointer-events-none">
-          <div className="bg-black/40 backdrop-blur-md rounded-xl p-3 border border-white/10 shadow-2xl min-w-[160px] flex flex-col gap-2">
-            <div className="flex items-center gap-2 mb-1 border-b border-white/5 pb-1">
+          <div className="bg-black/40 backdrop-blur-md rounded-xl p-3 border border-white/10 shadow-2xl min-w-[160px]">
+             <div className="flex items-center gap-2 mb-2 border-b border-white/5 pb-1">
               <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-              <span className="text-[10px] font-bold uppercase tracking-wider text-white/50">{joinedVoiceChannel}</span>
+              <span className="text-[10px] font-bold uppercase text-white/50">{joinedVoiceChannel}</span>
             </div>
-            
             <div className="space-y-2">
-              {/* Lokal Kullanıcı */}
-              <div className={cn(
-                "flex items-center gap-3 transition-all duration-300",
-                isSpeaking && "scale-105"
-              )}>
-                <div className={cn(
-                  "w-8 h-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold text-white shadow-lg transition-all",
-                  isSpeaking && "ring-2 ring-green-400 ring-offset-2 ring-offset-black/40 shadow-green-400/20"
-                )}>
-                  {userName.charAt(0).toUpperCase()}
-                </div>
-                <div className="flex flex-col">
-                  <span className={cn(
-                    "text-sm font-semibold transition-colors",
-                    isSpeaking ? "text-green-400" : "text-white/90"
-                  )}>{userName}</span>
-                  {isMuted && <span className="text-[9px] text-red-400 font-bold uppercase">Susturuldu</span>}
-                </div>
+              <div className={cn("flex items-center gap-2", isSpeaking && "scale-105")}>
+                <div className={cn("w-6 h-6 rounded-full bg-primary flex items-center justify-center text-[10px] font-bold", isSpeaking && "ring-2 ring-green-400")}>{userName.charAt(0)}</div>
+                <span className={cn("text-xs font-semibold", isSpeaking ? "text-green-400" : "text-white")}>{userName}</span>
               </div>
-
-              {/* Uzak Kullanıcılar */}
               {targetUser && (
-                <div className={cn(
-                  "flex items-center gap-3 transition-all duration-300",
-                  remoteIsSpeaking && "scale-105"
-                )}>
-                  <div className={cn(
-                    "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-xs font-bold text-accent-foreground shadow-lg transition-all",
-                    remoteIsSpeaking && "ring-2 ring-green-400 ring-offset-2 ring-offset-black/40 shadow-green-400/20"
-                  )}>
-                    {targetUser.displayName.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex flex-col">
-                    <span className={cn(
-                      "text-sm font-semibold transition-colors",
-                      remoteIsSpeaking ? "text-green-400" : "text-white/90"
-                    )}>{targetUser.displayName}</span>
-                    {targetUser.isMuted && <span className="text-[9px] text-white/40 uppercase">Susturuldu</span>}
-                  </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold">{targetUser.displayName.charAt(0)}</div>
+                  <span className="text-xs font-semibold text-white">{targetUser.displayName}</span>
                 </div>
               )}
             </div>
@@ -675,134 +439,90 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         onRoomSelect={setActiveRoom}
         userName={userName}
         userId={userId}
+        userRole={userRole}
         onLogout={onLogout}
         joinedVoiceChannel={joinedVoiceChannel}
         onJoinVoice={handleJoinVoiceChannel}
         onLeaveVoice={handleLeaveVoiceChannel}
         isMuted={isMuted}
-        onToggleMute={toggleMute}
+        onToggleMute={() => { setIsMuted(!isMuted); localStreamRef.current?.getAudioTracks().forEach(t => t.enabled = isMuted); }}
         isDeafened={isDeafened}
-        onToggleDeafen={toggleDeafen}
+        onToggleDeafen={() => { setIsDeafened(!isDeafened); if (remoteAudioRef.current) remoteAudioRef.current.muted = !isDeafened; }}
         isSpeaking={isSpeaking}
         onOpenSettings={() => setIsSettingsOpen(true)}
         userVolumes={userVolumes}
         onVolumeChange={handleVolumeChange}
         onKickUser={handleKickUser}
+        onAddChannel={() => setIsAddChannelOpen(true)}
+        onDeleteChannel={handleDeleteChannel}
       />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
-        <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 shadow-sm bg-card/20 shrink-0">
+        <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 bg-card/20">
           <div className="flex items-center gap-2 font-semibold">
             <Hash className="w-5 h-5 text-muted-foreground" />
-            <span className="text-foreground">{activeRoom}</span>
+            <span>{activeRoom}</span>
           </div>
         </header>
 
-        <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 flex flex-col relative">
-            <ScrollArea className="flex-1 p-4">
-              <div className="space-y-4 pb-4">
-                {messages && messages.length > 0 ? (
-                  messages.map((msg) => (
-                    <div key={msg.id} className="group flex flex-col gap-1 hover:bg-black/5 p-2 rounded-md transition-colors">
-                      <div className="flex items-baseline gap-2">
-                        <span className="font-bold text-accent text-sm">{msg.displayName}</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
-                        </span>
-                      </div>
-                      <p className="text-sm text-foreground/90 break-words leading-relaxed">{msg.text}</p>
-                    </div>
-                  ))
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-20 opacity-30 text-center">
-                    <MessageSquare className="w-16 h-16 mb-4" />
-                    <h3 className="text-xl font-bold">Hoş geldin, {userName}!</h3>
-                    <p className="text-sm italic">Burası #{activeRoom} kanalı. Henüz mesaj yok.</p>
+        <div className="flex-1 flex flex-col relative overflow-hidden">
+          <ScrollArea className="flex-1 p-4">
+            <div className="space-y-4 pb-4">
+              {messages?.map((msg) => (
+                <div key={msg.id} className="group flex flex-col gap-1 hover:bg-black/5 p-2 rounded-md">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-bold text-accent text-sm">{msg.displayName}</span>
+                    <span className="text-[10px] text-muted-foreground">{msg.createdAt?.toDate?.().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || '...'}</span>
                   </div>
-                )}
-                <div ref={scrollRef} />
-              </div>
-            </ScrollArea>
-
-            <div className="p-4 bg-transparent shrink-0">
-              <form onSubmit={handleSendMessage} className="relative">
-                <Input
-                  value={messageText}
-                  onChange={(e) => setMessageText(e.target.value)}
-                  placeholder={`#${activeRoom} kanalına mesaj gönder`}
-                  className="w-full bg-black/20 border-none h-11 pr-12 focus-visible:ring-1 focus-visible:ring-primary/50"
-                />
-                <Button 
-                  type="submit" 
-                  size="icon" 
-                  variant="ghost" 
-                  className="absolute right-1 top-1 h-9 w-9 text-muted-foreground hover:text-primary"
-                  disabled={!messageText.trim()}
-                >
-                  <Hash className="w-5 h-5" />
-                </Button>
-              </form>
-            </div>
-          </div>
-
-          <aside className="w-60 bg-black/10 border-l border-black/5 hidden lg:block">
-            <ScrollArea className="h-full">
-              <div className="p-4 space-y-6">
-                <div>
-                  <h3 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest px-2 mb-3">
-                    {joinedVoiceChannel ? `${joinedVoiceChannel} — ${channelUsers?.length || 0}` : "Çevrimiçi"}
-                  </h3>
-                  <div className="space-y-1">
-                    {joinedVoiceChannel && channelUsers ? channelUsers.map((u) => (
-                      <div key={u.id} className="flex flex-col gap-1 px-2 py-2 rounded-md hover:bg-white/5 transition-colors group">
-                        <div className="flex items-center gap-3">
-                          <div className="relative">
-                            <div className={cn(
-                              "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs transition-all duration-200",
-                              ((u.userId === userId && isSpeaking) || (u.userId !== userId && remoteIsSpeaking)) && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
-                            )}>
-                              {u.displayName.charAt(0).toUpperCase()}
-                            </div>
-                            <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full" />
-                          </div>
-                          <div className="flex flex-col min-w-0">
-                            <span className="text-sm font-medium text-accent truncate">{u.displayName}</span>
-                            <span className="text-[10px] text-muted-foreground truncate leading-none">{u.isMuted ? "Susturuldu" : "Sesli"}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )) : (
-                      <div className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
-                        <div className="relative">
-                          <div className={cn(
-                            "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs transition-all duration-200",
-                            isSpeaking && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
-                          )}>
-                            {userName.charAt(0).toUpperCase()}
-                          </div>
-                          <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full" />
-                        </div>
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-sm font-medium text-accent truncate">{userName}</span>
-                          <span className="text-[11px] text-muted-foreground leading-none">Çevrimiçi</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <p className="text-sm text-foreground/90 break-words">{msg.text}</p>
                 </div>
-              </div>
-            </ScrollArea>
-          </aside>
+              ))}
+              <div ref={scrollRef} />
+            </div>
+          </ScrollArea>
+
+          <form onSubmit={handleSendMessage} className="p-4 shrink-0">
+            <div className="relative">
+              <Input
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                placeholder={`#${activeRoom} kanalına mesaj gönder`}
+                className="w-full bg-black/20 border-none h-11 pr-12"
+              />
+              <Button type="submit" size="icon" variant="ghost" className="absolute right-1 top-1 h-9 w-9" disabled={!messageText.trim()}>
+                <MessageSquare className="w-5 h-5" />
+              </Button>
+            </div>
+          </form>
         </div>
       </main>
 
-      <AudioSettingsDialog
-        isOpen={isSettingsOpen}
-        onOpenChange={setIsSettingsOpen}
-        settings={audioSettings}
-        onSettingsChange={handleSettingsChange}
-      />
+      <AudioSettingsDialog isOpen={isSettingsOpen} onOpenChange={setIsSettingsOpen} settings={audioSettings} onSettingsChange={handleSettingsChange} />
+      
+      {/* Kanal Ekleme Dialog */}
+      <Dialog open={isAddChannelOpen} onOpenChange={setIsAddChannelOpen}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle>Yeni Kanal Oluştur</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Kanal İsmi</Label>
+              <Input value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} placeholder="kanal-ismi" className="bg-background" />
+            </div>
+            <div className="space-y-2">
+              <Label>Kanal Tipi</Label>
+              <div className="flex gap-2">
+                <Button variant={newChannelType === "text" ? "default" : "outline"} onClick={() => setNewChannelType("text")} className="flex-1">Metin</Button>
+                <Button variant={newChannelType === "voice" ? "default" : "outline"} onClick={() => setNewChannelType("voice")} className="flex-1">Ses</Button>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={handleAddChannel} disabled={!newChannelName.trim()}>Kanalı Oluştur</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
