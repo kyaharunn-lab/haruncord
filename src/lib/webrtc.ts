@@ -12,13 +12,26 @@ export interface AudioSettings {
 
 export const getLocalAudioStream = async (settings?: AudioSettings): Promise<MediaStream | null> => {
   try {
+    // Daha yüksek ses kalitesi için gelişmiş kısıtlamalar
+    const audioConstraints: any = {
+      deviceId: settings?.deviceId ? { exact: settings.deviceId } : undefined,
+      echoCancellation: settings?.echoCancellation ?? true,
+      noiseSuppression: settings?.noiseSuppression ?? true,
+      autoGainControl: settings?.autoGainControl ?? true,
+      sampleRate: 48000, // 48kHz stüdyo kalitesi
+      channelCount: 1,   // Mono ses (sesli sohbet için ideal)
+      latency: 0,        // En düşük gecikme hedefi
+      
+      // Chromium tabanlı tarayıcılar için özel ses iyileştirme ayarları
+      googEchoCancellation: true,
+      googAutoGainControl: true,
+      googNoiseSuppression: true,
+      googHighpassFilter: true,
+      googTypingNoiseDetection: true,
+    };
+
     const constraints: MediaStreamConstraints = {
-      audio: {
-        deviceId: settings?.deviceId ? { exact: settings.deviceId } : undefined,
-        echoCancellation: settings?.echoCancellation ?? true,
-        noiseSuppression: settings?.noiseSuppression ?? true,
-        autoGainControl: settings?.autoGainControl ?? true,
-      },
+      audio: audioConstraints,
       video: false,
     };
 
