@@ -1,3 +1,4 @@
+
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -6,29 +7,29 @@ service cloud.firestore {
      * GELİŞTİRME MODU GÜVENLİK KURALLARI
      * UYARI: Bu kurallar herkese açık okuma ve yazma izni verir.
      * Firebase Auth kullanılmayan MVP geliştirme aşaması için tasarlanmıştır.
-     * Üretim ortamına geçmeden önce bu kurallar request.auth kontrolü ile sıkılaştırılmalıdır.
      */
 
     // Ses Kanalları ve Varlık (Presence) Sistemi
     match /voiceChannels/{voiceChannelId} {
-      // Kanalların listelenmesine herkes izin verilir
       allow read: if true;
-      // Kanal tanımlarının kendisi (static metadata) değiştirilemez
       allow write: if false;
 
-      // Kullanıcı varlık kayıtları (Kimin hangi odada olduğu)
+      // Kullanıcı varlık kayıtları
       match /presence/{userId} {
-        // MVP aşamasında herkesin odadaki diğerlerini görmesine ve kendi kaydını yönetmesine izin verilir
         allow read, write: if true;
       }
 
-      // WebRTC Sinyalleşme Kutuları (Gelecekteki P2P bağlantıları için)
+      // WebRTC Offers (Basit havuz sistemi)
+      match /offers/{offerId} {
+        allow read, write: if true;
+      }
+
+      // WebRTC Sinyalleşme Kutuları
       match /users/{receiverUserId}/webrtcSignals/{signalId} {
         allow read, write: if true;
       }
     }
 
-    // Gelecekte eklenebilecek odalar ve mesajlar için genel izinler
     match /rooms/{roomId} {
       allow read, write: if true;
     }

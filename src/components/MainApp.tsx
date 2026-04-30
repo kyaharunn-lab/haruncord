@@ -8,7 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
-import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
+import { setDocumentNonBlocking, deleteDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer } from '@/lib/webrtc';
 
 interface MainAppProps {
@@ -59,6 +59,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
+    if (!db) return;
 
     // Temizlik
     if (peerConnectionRef.current) {
@@ -86,6 +87,16 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           const offer = await createOffer(pc);
           if (offer) {
             console.log('offer hazır');
+            const offersRef = collection(db, 'voiceChannels', channel, 'offers');
+            addDocumentNonBlocking(offersRef, {
+              userId,
+              displayName: userName,
+              offer: {
+                type: offer.type,
+                sdp: offer.sdp
+              },
+              createdAt: serverTimestamp()
+            });
           }
         }
       }
@@ -105,7 +116,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         description: 'Sesli kanala katılmak için mikrofon izni vermeniz gerekiyor.',
       });
     }
-  }, [toast, joinedVoiceChannel, channelUsers]);
+  }, [toast, joinedVoiceChannel, channelUsers, db, userId, userName]);
 
   const handleLeaveVoiceChannel = useCallback(() => {
     if (peerConnectionRef.current) {
