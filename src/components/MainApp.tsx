@@ -7,7 +7,7 @@ import { Hash, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, deleteDoc } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, deleteDoc, writeBatch } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   deleteDocumentNonBlocking,
@@ -80,8 +80,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         if (speaking !== lastSpeakState) {
           setIsSpeaking(speaking);
           lastSpeakState = speaking;
-          if (speaking) console.log("mikrofon ses algılıyor");
-          else console.log("mikrofon sessiz");
         }
         animationId = requestAnimationFrame(checkVolume);
       };
@@ -266,63 +264,54 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   // TEMİZLİK MANTIĞI
   const handleLeaveVoiceChannel = useCallback(async () => {
-    console.log("Ses kanalı temizliği başlatılıyor...");
-
-    // 1. WebRTC Bağlantısını Kapat
     if (peerConnectionRef.current) {
       closePeerConnection(peerConnectionRef.current);
       peerConnectionRef.current = null;
     }
     
-    // 2. Lokal Medya Akışını Durdur
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop());
       localStreamRef.current = null;
     }
 
-    // 3. Uzak Ses Öğesini Temizle
     if (remoteAudioRef.current) {
       remoteAudioRef.current.pause();
       remoteAudioRef.current.srcObject = null;
     }
 
-    // 4. Firestore Kayıtlarını Temizle
     if (db && joinedVoiceChannel && userId) {
-      // Presence Sil
       const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
       deleteDocumentNonBlocking(presenceRef);
       console.log("presence temizlendi");
 
-      // Call ve Candidates Temizliği
-      if (callInfo) {
-        // Kendi oluşturduğu adayları sil
-        const candidatesRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates");
-        const qCands = query(candidatesRef, where("userId", "==", userId));
-        getDocs(qCands).then(snapshot => {
-          snapshot.forEach(d => deleteDoc(d.ref));
-          console.log("candidate temizlendi");
-        });
+      try {
+        const callsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls");
+        const qOfferer = query(callsRef, where("offererId", "==", userId));
+        const qAnswerer = query(callsRef, where("answererId", "==", userId));
 
-        // Eğer Offerer ise ana Call dokümanını sil (Arama sahibi temizliği)
-        // Eğer Answerer ise de dokümanı silerek aramanın bittiğini bildirebiliriz
-        if (callDocRef) {
-          deleteDocumentNonBlocking(callDocRef);
-          console.log("call temizlendi");
-        }
+        const [offererSnap, answererSnap] = await Promise.all([
+          getDocs(qOfferer),
+          getDocs(qAnswerer)
+        ]);
+
+        const batch = writeBatch(db);
+        [...offererSnap.docs, ...answererSnap.docs].forEach(d => {
+          batch.delete(d.ref);
+        });
+        await batch.commit();
+        console.log("call temizlendi");
+      } catch (e) {
+        console.warn("Call temizlenirken hata oluştu (önemsiz):", e);
       }
     }
 
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
-  }, [db, joinedVoiceChannel, userId, callInfo, callDocRef]);
+  }, [db, joinedVoiceChannel, userId]);
 
-  // Sayfa kapanışında veya yenilenmesinde temizlik
   useEffect(() => {
-    const handleUnload = () => {
-      // Senkron temizlik denemesi (presence en azından silinmeye çalışılır)
-      handleLeaveVoiceChannel();
-    };
+    const handleUnload = () => { handleLeaveVoiceChannel(); };
     window.addEventListener("beforeunload", handleUnload);
     return () => window.removeEventListener("beforeunload", handleUnload);
   }, [handleLeaveVoiceChannel]);
@@ -330,6 +319,21 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
+
+    // Ön temizlik: Eğer bu kanalda bu kullanıcı için kalmış eski bir call varsa temizle
+    if (db && userId) {
+      try {
+        const callsRef = collection(db, "voiceChannels", channel, "calls");
+        const qUser = query(callsRef, where("offererId", "==", userId));
+        const qUser2 = query(callsRef, where("answererId", "==", userId));
+        const [snap1, snap2] = await Promise.all([getDocs(qUser), getDocs(qUser2)]);
+        const batch = writeBatch(db);
+        [...snap1.docs, ...snap2.docs].forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      } catch (e) {
+        console.warn("Ön temizlik başarısız (önemsiz):", e);
+      }
+    }
 
     try {
       const stream = await getLocalAudioStream();
@@ -341,7 +345,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     } catch (error) {
       toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." });
     }
-  }, [toast, joinedVoiceChannel, handleLeaveVoiceChannel]);
+  }, [toast, joinedVoiceChannel, handleLeaveVoiceChannel, db, userId]);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
