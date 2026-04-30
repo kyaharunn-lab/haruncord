@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -8,7 +7,7 @@ import { Hash, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, deleteDoc } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   deleteDocumentNonBlocking,
@@ -231,7 +230,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         userId,
         displayName: userName,
         voiceChannelId: joinedVoiceChannel,
-        lastSeen: new Date().toISOString(), // Use local ISO for easier client filtering
+        lastSeen: new Date().toISOString(),
         isMuted,
         id: userId,
       }, { merge: true });
@@ -261,15 +260,15 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   }, [db, joinedVoiceChannel]);
   const { data: rawChannelUsers } = useCollection(presenceQuery);
 
-  // Filter Active Users (Local Heartbeat Check)
+  // Filter Active Users (Local Heartbeat Check - 15 Seconds Threshold)
   const channelUsers = useMemo(() => {
     if (!rawChannelUsers) return null;
     const now = Date.now();
     return rawChannelUsers.filter(u => {
       if (!u.lastSeen) return true;
       const lastSeenDate = new Date(u.lastSeen);
-      // Show users active in last 30 seconds
-      return now - lastSeenDate.getTime() < 30000;
+      // UI ONLY shows users active in last 15 seconds
+      return now - lastSeenDate.getTime() < 15000;
     });
   }, [rawChannelUsers]);
 
