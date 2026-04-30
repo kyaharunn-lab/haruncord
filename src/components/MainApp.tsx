@@ -7,7 +7,7 @@ import { Hash, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, deleteDoc, writeBatch } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   deleteDocumentNonBlocking,
@@ -42,11 +42,42 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const localStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-
   const processedIceCandidatesRef = useRef<Set<string>>(new Set());
 
   const { toast } = useToast();
   const db = useFirestore();
+
+  // Lokal Ses Efektleri (Join/Leave)
+  const playSoundEffect = useCallback((type: 'join' | 'leave') => {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      const now = audioCtx.currentTime;
+      gainNode.gain.setValueAtTime(0, now);
+      gainNode.gain.linearRampToValueAtTime(0.05, now + 0.05); // Düşük ses seviyesi
+
+      if (type === 'join') {
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(500, now);
+        oscillator.frequency.exponentialRampToValueAtTime(700, now + 0.15);
+      } else {
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(700, now);
+        oscillator.frequency.exponentialRampToValueAtTime(500, now + 0.15);
+      }
+
+      gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+      oscillator.start(now);
+      oscillator.stop(now + 0.3);
+    } catch (err) {
+      console.warn("Ses efekti çalınamadı:", err);
+    }
+  }, []);
 
   // Voice Activity Detection
   useEffect(() => {
@@ -80,6 +111,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         if (speaking !== lastSpeakState) {
           setIsSpeaking(speaking);
           lastSpeakState = speaking;
+          if (speaking) console.log("mikrofon ses algılıyor");
+          else console.log("mikrofon sessiz");
         }
         animationId = requestAnimationFrame(checkVolume);
       };
@@ -162,6 +195,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           candidate: event.candidate.toJSON(),
           createdAt: serverTimestamp(),
         });
+        console.log("ICE yazıldı");
       }
     };
 
@@ -221,14 +255,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         }
 
         if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") {
-          console.log("answer firestore okundu");
+          console.log("answer alındı");
           await setRemoteDescription(peerConnectionRef.current, callData.answer);
           console.log("answer uygulandı");
         }
       } 
       else {
         if (callData?.offer && !peerConnectionRef.current) {
-          console.log("offer firestore okundu");
+          console.log("offer alındı");
           const pc = setupPeerConnection();
           if (!pc) return;
           peerConnectionRef.current = pc;
@@ -264,6 +298,8 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   // TEMİZLİK MANTIĞI
   const handleLeaveVoiceChannel = useCallback(async () => {
+    if (joinedVoiceChannel) playSoundEffect('leave');
+
     if (peerConnectionRef.current) {
       closePeerConnection(peerConnectionRef.current);
       peerConnectionRef.current = null;
@@ -300,6 +336,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         });
         await batch.commit();
         console.log("call temizlendi");
+        console.log("candidate temizlendi");
       } catch (e) {
         console.warn("Call temizlenirken hata oluştu (önemsiz):", e);
       }
@@ -308,7 +345,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
-  }, [db, joinedVoiceChannel, userId]);
+  }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   useEffect(() => {
     const handleUnload = () => { handleLeaveVoiceChannel(); };
@@ -320,7 +357,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
 
-    // Ön temizlik: Eğer bu kanalda bu kullanıcı için kalmış eski bir call varsa temizle
+    // Ön temizlik
     if (db && userId) {
       try {
         const callsRef = collection(db, "voiceChannels", channel, "calls");
@@ -341,11 +378,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       localStreamRef.current = stream;
       setJoinedVoiceChannel(channel);
       setIsMuted(false);
+      playSoundEffect('join');
       toast({ title: "Sesli Kanala Katılındı", description: `${channel} kanalına bağlandınız.` });
     } catch (error) {
       toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." });
     }
-  }, [toast, joinedVoiceChannel, handleLeaveVoiceChannel, db, userId]);
+  }, [toast, joinedVoiceChannel, handleLeaveVoiceChannel, db, userId, playSoundEffect]);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
