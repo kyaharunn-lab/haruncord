@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -8,7 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
-import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection } from '@/lib/webrtc';
+import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer } from '@/lib/webrtc';
 
 interface MainAppProps {
   userName: string;
@@ -30,6 +31,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const db = useFirestore();
   const { user } = useUser();
 
+  const activePresenceQuery = useMemoFirebase(() => {
+    if (!db || !joinedVoiceChannel || !user) return null;
+    return collection(db, 'voiceChannels', joinedVoiceChannel, 'presence');
+  }, [db, joinedVoiceChannel, user]);
+
+  const { data: channelUsers } = useCollection(activePresenceQuery);
+
   // Presence logic: Sync with Firestore when joined
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !user || !userId) return;
@@ -48,13 +56,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       deleteDocumentNonBlocking(presenceRef);
     };
   }, [db, joinedVoiceChannel, userId, userName, isMuted, user]);
-
-  const activePresenceQuery = useMemoFirebase(() => {
-    if (!db || !joinedVoiceChannel || !user) return null;
-    return collection(db, 'voiceChannels', joinedVoiceChannel, 'presence');
-  }, [db, joinedVoiceChannel, user]);
-
-  const { data: channelUsers } = useCollection(activePresenceQuery);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
@@ -79,6 +80,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       if (pc) {
         addLocalTracks(pc, stream);
         peerConnectionRef.current = pc;
+
+        // Eğer odada başka kullanıcılar varsa (mevcut kullanıcı henüz listeye eklenmediği için channelUsers başkalarını temsil eder)
+        if (channelUsers && channelUsers.length > 0) {
+          const offer = await createOffer(pc);
+          if (offer) {
+            console.log('offer hazır');
+          }
+        }
       }
       
       setJoinedVoiceChannel(channel);
@@ -96,7 +105,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         description: 'Sesli kanala katılmak için mikrofon izni vermeniz gerekiyor.',
       });
     }
-  }, [toast, joinedVoiceChannel]);
+  }, [toast, joinedVoiceChannel, channelUsers]);
 
   const handleLeaveVoiceChannel = useCallback(() => {
     if (peerConnectionRef.current) {
