@@ -34,8 +34,11 @@ service cloud.firestore {
     }
 
     // Metin Kanalları Sistemi
-    match /textChannels/{channelId}/messages/{messageId} {
+    match /textChannels/{channelId} {
       allow read, write: if true;
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
     }
 
     match /rooms/{roomId} {
