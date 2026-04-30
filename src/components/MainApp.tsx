@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -44,6 +45,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [remoteIsSpeaking, setRemoteIsSpeaking] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [messageText, setMessageText] = useState("");
 
@@ -200,6 +202,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
   }, []);
 
+  // Lokal Konuşma Analizi
   useEffect(() => {
     if (!localStreamRef.current || isMuted || !joinedVoiceChannel) {
       setIsSpeaking(false);
@@ -226,7 +229,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         analyser.getByteFrequencyData(dataArray);
         const sum = dataArray.reduce((total, value) => total + value, 0);
         const average = sum / bufferLength;
-        // Hassasiyet eşiğine göre konuşma göstergesini güncelle
         const threshold = (audioSettings.micSensitivity ?? 0.02) * 255;
         const speaking = average > threshold;
 
@@ -246,6 +248,54 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       if (audioContext) audioContext.close();
     };
   }, [joinedVoiceChannel, isMuted, audioSettings.micSensitivity]);
+
+  // Uzak Konuşma Analizi (Overlay için)
+  useEffect(() => {
+    if (!remoteAudioRef.current?.srcObject || !joinedVoiceChannel || isDeafened) {
+      setRemoteIsSpeaking(false);
+      return;
+    }
+
+    let audioContext: AudioContext | null = null;
+    let analyser: AnalyserNode | null = null;
+    let animationId = 0;
+    let lastSpeakState = false;
+
+    try {
+      const stream = remoteAudioRef.current.srcObject as MediaStream;
+      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      analyser = audioContext.createAnalyser();
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      analyser.fftSize = 256;
+
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      const checkVolume = () => {
+        if (!analyser) return;
+        analyser.getByteFrequencyData(dataArray);
+        const sum = dataArray.reduce((total, value) => total + value, 0);
+        const average = sum / bufferLength;
+        // Uzak ses için sabit bir eşik kullanıyoruz (konuşma net görünsün diye)
+        const speaking = average > 10;
+
+        if (speaking !== lastSpeakState) {
+          setRemoteIsSpeaking(speaking);
+          lastSpeakState = speaking;
+        }
+        animationId = requestAnimationFrame(checkVolume);
+      };
+      checkVolume();
+    } catch (err) {
+      console.error("Uzak ses analizi başlatılamadı:", err);
+    }
+
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId);
+      if (audioContext) audioContext.close();
+    };
+  }, [joinedVoiceChannel, isDeafened, remoteAudioRef.current?.srcObject]);
 
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !userId) return;
@@ -483,6 +533,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
+    setRemoteIsSpeaking(false);
     setIsDeafened(false);
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
@@ -535,7 +586,63 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   }, [isDeafened]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground font-body">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground font-body relative">
+      {/* Oyun Modu Overlay Paneli */}
+      {joinedVoiceChannel && (
+        <div className="absolute top-4 right-4 z-50 pointer-events-none">
+          <div className="bg-black/40 backdrop-blur-md rounded-xl p-3 border border-white/10 shadow-2xl min-w-[160px] flex flex-col gap-2">
+            <div className="flex items-center gap-2 mb-1 border-b border-white/5 pb-1">
+              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-white/50">{joinedVoiceChannel}</span>
+            </div>
+            
+            <div className="space-y-2">
+              {/* Lokal Kullanıcı */}
+              <div className={cn(
+                "flex items-center gap-3 transition-all duration-300",
+                isSpeaking && "scale-105"
+              )}>
+                <div className={cn(
+                  "w-8 h-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold text-white shadow-lg transition-all",
+                  isSpeaking && "ring-2 ring-green-400 ring-offset-2 ring-offset-black/40 shadow-green-400/20"
+                )}>
+                  {userName.charAt(0).toUpperCase()}
+                </div>
+                <div className="flex flex-col">
+                  <span className={cn(
+                    "text-sm font-semibold transition-colors",
+                    isSpeaking ? "text-green-400" : "text-white/90"
+                  )}>{userName}</span>
+                  {isMuted && <span className="text-[9px] text-red-400 font-bold uppercase">Susturuldu</span>}
+                </div>
+              </div>
+
+              {/* Uzak Kullanıcılar */}
+              {targetUser && (
+                <div className={cn(
+                  "flex items-center gap-3 transition-all duration-300",
+                  remoteIsSpeaking && "scale-105"
+                )}>
+                  <div className={cn(
+                    "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-xs font-bold text-accent-foreground shadow-lg transition-all",
+                    remoteIsSpeaking && "ring-2 ring-green-400 ring-offset-2 ring-offset-black/40 shadow-green-400/20"
+                  )}>
+                    {targetUser.displayName.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex flex-col">
+                    <span className={cn(
+                      "text-sm font-semibold transition-colors",
+                      remoteIsSpeaking ? "text-green-400" : "text-white/90"
+                    )}>{targetUser.displayName}</span>
+                    {targetUser.isMuted && <span className="text-[9px] text-white/40 uppercase">Susturuldu</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <RoomSidebar
         rooms={rooms}
         voiceChannels={voiceChannels}
@@ -627,7 +734,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                           <div className="relative">
                             <div className={cn(
                               "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs transition-all duration-200",
-                              u.userId === userId && isSpeaking && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
+                              ((u.userId === userId && isSpeaking) || (u.userId !== userId && remoteIsSpeaking)) && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
                             )}>
                               {u.displayName.charAt(0).toUpperCase()}
                             </div>
@@ -673,3 +780,4 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     </div>
   );
 }
+
