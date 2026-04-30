@@ -277,8 +277,13 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
     const updatePresence = () => {
       setDocumentNonBlocking(presenceRef, {
-        userId, displayName: userName, voiceChannelId: joinedVoiceChannel,
-        lastSeen: new Date().toISOString(), isMuted, id: userId,
+        userId, 
+        displayName: userName, 
+        voiceChannelId: joinedVoiceChannel,
+        lastSeen: new Date().toISOString(), 
+        isMuted, 
+        id: userId,
+        isSharingScreen: isScreenSharing,
       }, { merge: true });
     };
     updatePresence();
@@ -287,7 +292,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       clearInterval(heartbeat);
       deleteDocumentNonBlocking(presenceRef);
     };
-  }, [db, joinedVoiceChannel, userId, userName, isMuted]);
+  }, [db, joinedVoiceChannel, userId, userName, isMuted, isScreenSharing]);
 
   const presenceQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
   const { data: rawChannelUsers } = useCollection(presenceQuery);
@@ -426,9 +431,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       screenStreamRef.current?.getTracks().forEach(t => t.stop());
       screenStreamRef.current = null;
       setIsScreenSharing(false);
-      // PeerConnection'dan track'leri çıkar ve re-negotiate yap (MVP için basitçe bağlantıyı yenilemek de bir seçenek)
       toast({ title: "Paylaşım Durduruldu", description: "Ekran paylaşımı sonlandırıldı." });
-      // Tam bir re-negotiation yerine MVP için bağlantıyı yenilemeyi tercih edebiliriz veya call doc'u temizleyebiliriz
       handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
     } else {
       try {
@@ -437,7 +440,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         setIsScreenSharing(true);
         stream.getVideoTracks()[0].onended = () => handleToggleScreenShare();
         
-        // Mevcut bağlantıya track ekle ve re-negotiate tetikle
         if (peerConnectionRef.current) {
           handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
         }
@@ -575,7 +577,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
       <AudioSettingsDialog isOpen={isSettingsOpen} onOpenChange={setIsSettingsOpen} settings={audioSettings} onSettingsChange={handleSettingsChange} />
       
-      {/* Kanal Ekleme Dialog */}
       <Dialog open={isAddChannelOpen} onOpenChange={setIsAddChannelOpen}>
         <DialogContent className="bg-card border-border">
           <DialogHeader>

@@ -70,7 +70,15 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, onVo
           <div key={u.id} className="flex items-center justify-between group/user py-0.5 px-2 rounded hover:bg-white/5">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground shrink-0">{u.displayName.charAt(0)}</div>
-              <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[80px]">{u.displayName}</span>
+              <div className="flex flex-col min-w-0">
+                <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[80px]">{u.displayName}</span>
+                {u.isSharingScreen && (
+                  <span className="flex items-center gap-1 bg-primary/20 text-primary text-[9px] font-bold px-1 py-0.5 rounded leading-none w-fit border border-primary/30 uppercase animate-pulse">
+                    <Monitor className="w-2 h-2" />
+                    Yayında
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-1">
               {u.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
