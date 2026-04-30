@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { RoomSidebar } from './RoomSidebar';
 import { Hash, MessageSquare } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -21,17 +21,35 @@ export function MainApp({ userName, onLogout }: MainAppProps) {
   const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [hasMicPermission, setHasMicPermission] = useState(false);
+  
+  const localStreamRef = useRef<MediaStream | null>(null);
   const { toast } = useToast();
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
+    // If already in a channel, leave it first
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      // We don't need to keep the stream for this local-only MVP, 
-      // but getting it confirms permission.
-      stream.getTracks().forEach(track => track.stop()); 
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }, 
+        video: false 
+      });
       
+      localStreamRef.current = stream;
       setHasMicPermission(true);
       setJoinedVoiceChannel(channel);
+      setIsMuted(false); // Reset mute state on new join
+      
+      toast({
+        title: 'Sesli Kanala Katılındı',
+        description: `${channel} kanalına bağlandınız.`,
+      });
     } catch (error) {
       console.error('Microphone access denied:', error);
       setHasMicPermission(false);
@@ -44,12 +62,31 @@ export function MainApp({ userName, onLogout }: MainAppProps) {
   }, [toast]);
 
   const handleLeaveVoiceChannel = useCallback(() => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
     setJoinedVoiceChannel(null);
     setIsMuted(false);
   }, []);
 
   const toggleMute = useCallback(() => {
-    setIsMuted(prev => !prev);
+    if (localStreamRef.current) {
+      const newMuteState = !isMuted;
+      localStreamRef.current.getAudioTracks().forEach(track => {
+        track.enabled = !newMuteState;
+      });
+      setIsMuted(newMuteState);
+    }
+  }, [isMuted]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
   }, []);
 
   return (
