@@ -38,12 +38,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
     const presenceRef = doc(db, 'voiceChannels', joinedVoiceChannel, 'presence', userId);
     
+    // Signaling başlangıcı için gerekli alanlar
     setDocumentNonBlocking(presenceRef, {
       userId,
       displayName: userName,
-      voiceChannelId: joinedVoiceChannel,
-      lastSeen: serverTimestamp(),
-      isMuted: isMuted
+      channelId: joinedVoiceChannel,
+      joinedAt: serverTimestamp(),
+      isMuted: isMuted // UI için susturma bilgisini tutmaya devam ediyoruz
     }, { merge: true });
 
     return () => {
