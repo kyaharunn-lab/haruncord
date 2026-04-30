@@ -28,6 +28,11 @@ service cloud.firestore {
         allow read, write: if true;
       }
 
+      // WebRTC ICE Candidates (Adaylar)
+      match /candidates/{candidateId} {
+        allow read, write: if true;
+      }
+
       // WebRTC Sinyalleşme Kutuları
       match /users/{receiverUserId}/webrtcSignals/{signalId} {
         allow read, write: if true;

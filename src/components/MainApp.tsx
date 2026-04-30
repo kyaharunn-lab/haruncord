@@ -8,7 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
-import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer, createAnswer, setRemoteDescription } from '@/lib/webrtc';
+import { getLocalAudioStream, createPeerConnection, addLocalTracks, closePeerConnection, createOffer, createAnswer, setRemoteDescription, addIceCandidate } from '@/lib/webrtc';
 
 interface MainAppProps {
   userName: string;
@@ -54,6 +54,14 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   const { data: answers } = useCollection(answersQuery);
 
+  // Candidates Query (Signaling)
+  const candidatesQuery = useMemoFirebase(() => {
+    if (!db || !joinedVoiceChannel || !user) return null;
+    return collection(db, 'voiceChannels', joinedVoiceChannel, 'candidates');
+  }, [db, joinedVoiceChannel, user]);
+
+  const { data: remoteCandidates } = useCollection(candidatesQuery);
+
   // Presence sync
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !user || !userId) return;
@@ -83,8 +91,9 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
           console.log('offer bulundu:', offerDoc.displayName);
           
           if (localStreamRef.current) {
-            const pc = createPeerConnection();
+            const pc = peerConnectionRef.current || createPeerConnection();
             if (pc) {
+              peerConnectionRef.current = pc;
               addLocalTracks(pc, localStreamRef.current);
               const answer = await createAnswer(pc, offerDoc.offer);
               if (answer) {
@@ -126,6 +135,22 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
     processAnswers();
   }, [answers, userId]);
+
+  // Handle Incoming ICE Candidates
+  useEffect(() => {
+    if (!remoteCandidates || remoteCandidates.length === 0 || !userId || !peerConnectionRef.current) return;
+
+    const processCandidates = async () => {
+      for (const candidateDoc of remoteCandidates) {
+        if (candidateDoc.userId !== userId) {
+          console.log('ICE eklendi');
+          await addIceCandidate(peerConnectionRef.current!, candidateDoc.candidate);
+        }
+      }
+    };
+
+    processCandidates();
+  }, [remoteCandidates, userId]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     if (joinedVoiceChannel === channel) return;
