@@ -3,11 +3,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { RoomSidebar } from "./RoomSidebar";
-import { Hash, MessageSquare } from "lucide-react";
+import { Hash, MessageSquare, Send } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   deleteDocumentNonBlocking,
@@ -43,6 +45,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [isDeafened, setIsDeafened] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [messageText, setMessageText] = useState("");
 
   const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
   const [audioSettings, setAudioSettings] = useState<AudioSettings & { outputDeviceId?: string }>({
@@ -57,10 +60,45 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const processedIceCandidatesRef = useRef<Set<string>>(new Set());
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const { toast } = useToast();
   const db = useFirestore();
 
+  // --- Mesajlaşma Mantığı ---
+  const messagesQuery = useMemoFirebase(() => {
+    if (!db || !activeRoom) return null;
+    return query(
+      collection(db, "textChannels", activeRoom, "messages"),
+      orderBy("createdAt", "asc"),
+      limit(50)
+    );
+  }, [db, activeRoom]);
+
+  const { data: messages } = useCollection(messagesQuery);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+
+  const handleSendMessage = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!messageText.trim() || !db || !activeRoom) return;
+
+    const messagesRef = collection(db, "textChannels", activeRoom, "messages");
+    addDocumentNonBlocking(messagesRef, {
+      text: messageText.trim(),
+      userId,
+      displayName: userName,
+      createdAt: serverTimestamp(),
+    });
+
+    setMessageText("");
+  };
+
+  // --- Sesli Sohbet Mantığı (Mevcut) ---
   useEffect(() => {
     const savedAudio = localStorage.getItem("kanka_audio_settings");
     if (savedAudio) {
@@ -522,7 +560,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
-        <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 shadow-sm bg-card/20">
+        <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 shadow-sm bg-card/20 shrink-0">
           <div className="flex items-center gap-2 font-semibold">
             <Hash className="w-5 h-5 text-muted-foreground" />
             <span className="text-foreground">{activeRoom}</span>
@@ -530,13 +568,50 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         </header>
 
         <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 flex flex-col p-6 space-y-4">
-            <div className="flex flex-col items-center justify-center flex-1 text-center opacity-40">
-              <div className="p-6 bg-black/10 rounded-full mb-4">
-                <MessageSquare className="w-16 h-16" />
+          <div className="flex-1 flex flex-col relative">
+            <ScrollArea className="flex-1 p-4">
+              <div className="space-y-4 pb-4">
+                {messages && messages.length > 0 ? (
+                  messages.map((msg) => (
+                    <div key={msg.id} className="group flex flex-col gap-1 hover:bg-black/5 p-2 rounded-md transition-colors">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-bold text-accent text-sm">{msg.displayName}</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
+                        </span>
+                      </div>
+                      <p className="text-sm text-foreground/90 break-words leading-relaxed">{msg.text}</p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-20 opacity-30 text-center">
+                    <MessageSquare className="w-16 h-16 mb-4" />
+                    <h3 className="text-xl font-bold">Hoş geldin, {userName}!</h3>
+                    <p className="text-sm italic">Burası #{activeRoom} kanalı. Henüz mesaj yok.</p>
+                  </div>
+                )}
+                <div ref={scrollRef} />
               </div>
-              <h2 className="text-2xl font-bold">Hoş geldin, {userName}!</h2>
-              <p className="max-w-xs mt-2 italic text-sm">Burası {activeRoom} odası. Henüz mesaj yok.</p>
+            </ScrollArea>
+
+            <div className="p-4 bg-transparent shrink-0">
+              <form onSubmit={handleSendMessage} className="relative">
+                <Input
+                  value={messageText}
+                  onChange={(e) => setMessageText(e.target.value)}
+                  placeholder={`#${activeRoom} kanalına mesaj gönder`}
+                  className="w-full bg-black/20 border-none h-11 pr-12 focus-visible:ring-1 focus-visible:ring-primary/50"
+                />
+                <Button 
+                  type="submit" 
+                  size="icon" 
+                  variant="ghost" 
+                  className="absolute right-1 top-1 h-9 w-9 text-muted-foreground hover:text-primary"
+                  disabled={!messageText.trim()}
+                >
+                  <Send className="w-5 h-5" />
+                </Button>
+              </form>
             </div>
           </div>
 
@@ -545,7 +620,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
               <div className="p-4 space-y-6">
                 <div>
                   <h3 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest px-2 mb-3">
-                    {joinedVoiceChannel ? `${joinedVoiceChannel} — ${channelUsers?.length || 0}` : "Çevrimiçi — 1"}
+                    {joinedVoiceChannel ? `${joinedVoiceChannel} — ${channelUsers?.length || 0}` : "Çevrimiçi"}
                   </h3>
                   <div className="space-y-1">
                     {joinedVoiceChannel && channelUsers ? channelUsers.map((u) => (
