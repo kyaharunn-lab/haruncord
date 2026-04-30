@@ -15,8 +15,20 @@ export const getLocalAudioStream = async (): Promise<MediaStream | null> => {
   }
 };
 
-export const createPeerConnection = () => {
-  console.log('createPeerConnection placeholder');
+export const createPeerConnection = (): RTCPeerConnection | null => {
+  try {
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        {
+          urls: 'stun:stun.l.google.com:19302',
+        },
+      ],
+    });
+    return pc;
+  } catch (error) {
+    console.error('PeerConnection oluşturulurken bir hata oluştu:', error);
+    return null;
+  }
 };
 
 export const createOffer = () => {
