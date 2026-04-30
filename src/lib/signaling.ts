@@ -1,10 +1,33 @@
-/**
- * Sinyalleşme işlemleri için geçici placeholder fonksiyonlar.
- * Firestore veya WebRTC bağımlılığı içermez.
- */
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
 /**
- * Yeni bir sinyal oluşturur (Şimdilik sadece log yazar).
+ * WebRTC Answer (Yanıt) bilgisini Firestore'a kaydeder.
+ * @param db Firestore veritabanı örneği
+ * @param channelId Ses kanalı ID'si
+ * @param userId Yanıtı gönderen kullanıcı ID'si
+ * @param targetUserId Yanıtın gönderildiği (teklifi yapan) kullanıcı ID'si
+ * @param answer WebRTC Answer nesnesi (type ve sdp içeren)
+ */
+export async function saveAnswer(db: any, channelId: string, userId: string, targetUserId: string, answer: any) {
+  try {
+    const answersRef = collection(db, 'voiceChannels', channelId, 'answers');
+    return await addDoc(answersRef, {
+      userId,
+      targetUserId,
+      answer: {
+        type: answer.type,
+        sdp: answer.sdp
+      },
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error('Answer kaydedilirken hata oluştu:', error);
+    throw error;
+  }
+}
+
+/**
+ * Sinyalleşme işlemleri için geçici placeholder fonksiyonlar.
  */
 export async function createSignal(data: any) {
   console.log('Sinyal oluşturuluyor:', data);
