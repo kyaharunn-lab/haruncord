@@ -9,6 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useFirestore, useMemoFirebase, useCollection, useUser } from '@/firebase';
 import { doc, collection, serverTimestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
+import { cn } from '@/lib/utils';
 
 interface MainAppProps {
   userName: string;
@@ -48,17 +49,9 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
   }, [db, joinedVoiceChannel, userId, userName, isMuted, user]);
 
-  // Listen to presence for the active channel (or all if needed)
-  // To keep it simple, we listen to presence for each voice channel to show in sidebar
-  const presenceQueries = voiceChannels.map(channel => {
-    return useMemoFirebase(() => {
-      if (!db || !user) return null;
-      return collection(db, 'voiceChannels', channel, 'presence');
-    }, [db, channel, user]);
-  });
-
   // Since we can't easily map useCollection in a loop due to hooks rules,
   // we use the joined channel's presence for the right sidebar.
+  // The individual channel users are listed in the Sidebar component's own hooks.
   const activePresenceQuery = useMemoFirebase(() => {
     if (!db || !joinedVoiceChannel || !user) return null;
     return collection(db, 'voiceChannels', joinedVoiceChannel, 'presence');
@@ -195,7 +188,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                         </div>
                         <div className="flex flex-col min-w-0">
                           <span className="text-sm font-medium text-accent truncate">{userName}</span>
-                          <span className="text-[10px] text-muted-foreground truncate leading-none">Çevrimiçi</span>
+                          <span className="text-[11px] text-muted-foreground leading-none">Çevrimiçi</span>
                         </div>
                       </div>
                     )}
