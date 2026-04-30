@@ -1,3 +1,4 @@
+
 {
   "entities": {
     "VoiceChannel": {
@@ -46,6 +47,14 @@
           "type": "string",
           "description": "Timestamp indicating the last time this presence record was updated, useful for identifying and cleaning up stale or disconnected users.",
           "format": "date-time"
+        },
+        "isMuted": {
+          "type": "boolean",
+          "description": "Indicates if the user's microphone is currently muted."
+        },
+        "isKicked": {
+          "type": "boolean",
+          "description": "Indicates if the user has been kicked from the channel by an admin."
         }
       },
       "required": [

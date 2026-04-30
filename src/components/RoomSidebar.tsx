@@ -1,8 +1,9 @@
+
 "use client"
 
 import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1 } from 'lucide-react';
+import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1, UserMinus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
@@ -29,13 +30,16 @@ interface RoomSidebarProps {
   onOpenSettings: () => void;
   userVolumes: Record<string, number>;
   onVolumeChange: (userId: string, volume: number) => void;
+  onKickUser?: (userId: string) => void;
 }
 
-function ChannelUserList({ channelId, currentUserId, userVolumes, onVolumeChange }: { 
+function ChannelUserList({ channelId, currentUserId, currentUserName, userVolumes, onVolumeChange, onKickUser }: { 
   channelId: string, 
   currentUserId: string,
+  currentUserName: string,
   userVolumes: Record<string, number>,
-  onVolumeChange: (userId: string, volume: number) => void
+  onVolumeChange: (userId: string, volume: number) => void,
+  onKickUser?: (userId: string) => void
 }) {
   const db = useFirestore();
   const q = useMemoFirebase(() => {
@@ -57,6 +61,9 @@ function ChannelUserList({ channelId, currentUserId, userVolumes, onVolumeChange
 
   if (activeUsers.length === 0) return null;
 
+  // Simple admin check: If user's name contains "Admin" or is the first user (for MVP)
+  const isAdmin = currentUserName.toLowerCase().includes('admin');
+
   return (
     <div className="ml-4 space-y-0.5 mt-1">
       {activeUsers.map((u) => {
@@ -76,27 +83,43 @@ function ChannelUserList({ channelId, currentUserId, userVolumes, onVolumeChange
               {u.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
               
               {!isMe && (
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <button className="text-muted-foreground hover:text-foreground transition-colors p-0.5">
-                      {volume === 0 ? <VolumeX className="w-3 h-3" /> : <Volume1 className="w-3 h-3" />}
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent side="right" className="w-40 bg-card border-border p-3">
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center text-[10px] font-bold uppercase text-muted-foreground">
-                        <span>Ses Seviyesi</span>
-                        <span>%{volume}</span>
+                <div className="flex items-center gap-1 opacity-0 group-hover/user:opacity-100 transition-opacity">
+                  {isAdmin && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button 
+                          onClick={() => onKickUser?.(u.userId)}
+                          className="text-destructive hover:text-red-400 transition-colors p-0.5"
+                        >
+                          <UserMinus className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">Kanaldan At</TooltipContent>
+                    </Tooltip>
+                  )}
+                  
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <button className="text-muted-foreground hover:text-foreground transition-colors p-0.5">
+                        {volume === 0 ? <VolumeX className="w-3 h-3" /> : <Volume1 className="w-3 h-3" />}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent side="right" className="w-40 bg-card border-border p-3">
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center text-[10px] font-bold uppercase text-muted-foreground">
+                          <span>Ses Seviyesi</span>
+                          <span>%{volume}</span>
+                        </div>
+                        <Slider
+                          value={[volume]}
+                          max={100}
+                          step={1}
+                          onValueChange={(vals) => onVolumeChange(u.userId, vals[0])}
+                        />
                       </div>
-                      <Slider
-                        value={[volume]}
-                        max={100}
-                        step={1}
-                        onValueChange={(vals) => onVolumeChange(u.userId, vals[0])}
-                      />
-                    </div>
-                  </PopoverContent>
-                </Popover>
+                    </PopoverContent>
+                  </Popover>
+                </div>
               )}
             </div>
           </div>
@@ -124,7 +147,8 @@ export function RoomSidebar({
   isSpeaking = false,
   onOpenSettings,
   userVolumes,
-  onVolumeChange
+  onVolumeChange,
+  onKickUser
 }: RoomSidebarProps) {
   return (
     <TooltipProvider>
@@ -177,8 +201,10 @@ export function RoomSidebar({
                   <ChannelUserList 
                     channelId={channel} 
                     currentUserId={userId} 
+                    currentUserName={userName}
                     userVolumes={userVolumes} 
                     onVolumeChange={onVolumeChange}
+                    onKickUser={onKickUser}
                   />
                 </div>
               ))}

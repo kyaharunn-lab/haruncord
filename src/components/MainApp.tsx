@@ -103,7 +103,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
 
   // --- Sesli Sohbet Mantığı ---
   useEffect(() => {
-    const savedAudio = localStorage.getItem("kanka_audio_settings");
+    const savedAudio = localStorage.getItem("kanka_voice_audio_settings");
     if (savedAudio) {
       try {
         setAudioSettings(prev => ({ ...prev, ...JSON.parse(savedAudio) }));
@@ -277,7 +277,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         analyser.getByteFrequencyData(dataArray);
         const sum = dataArray.reduce((total, value) => total + value, 0);
         const average = sum / bufferLength;
-        // Uzak ses için sabit bir eşik kullanıyoruz (konuşma net görünsün diye)
         const speaking = average > 10;
 
         if (speaking !== lastSpeakState) {
@@ -296,6 +295,25 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       if (audioContext) audioContext.close();
     };
   }, [joinedVoiceChannel, isDeafened, remoteAudioRef.current?.srcObject]);
+
+  // Kendi varlık dokümanını izle (Atılma durumunu tespit etmek için)
+  const localPresenceRef = useMemoFirebase(() => {
+    if (!db || !joinedVoiceChannel || !userId) return null;
+    return doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
+  }, [db, joinedVoiceChannel, userId]);
+
+  const { data: localPresenceData } = useDoc(localPresenceRef);
+
+  useEffect(() => {
+    if (localPresenceData?.isKicked && joinedVoiceChannel) {
+      handleLeaveVoiceChannel();
+      toast({
+        variant: "destructive",
+        title: "Kanaldan Atıldın",
+        description: "Bir yönetici tarafından ses kanalından çıkarıldın.",
+      });
+    }
+  }, [localPresenceData?.isKicked, joinedVoiceChannel]);
 
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !userId) return;
@@ -522,9 +540,9 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         const batch = writeBatch(db);
         [...offererSnap.docs, ...answererSnap.docs].forEach(d => {
           batch.delete(d.ref);
+          console.log("call temizlendi");
         });
         await batch.commit();
-        console.log("call temizlendi");
       } catch (e) {
         console.warn("Call temizlenirken hata oluştu:", e);
       }
@@ -584,6 +602,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       remoteAudioRef.current.muted = newState;
     }
   }, [isDeafened]);
+
+  const handleKickUser = useCallback((targetId: string) => {
+    if (!db || !joinedVoiceChannel) return;
+    const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", targetId);
+    setDocumentNonBlocking(presenceRef, { isKicked: true }, { merge: true });
+    toast({ title: "Kullanıcı Atıldı", description: "Kullanıcı ses kanalından çıkarıldı." });
+  }, [db, joinedVoiceChannel, toast]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground font-body relative">
@@ -662,6 +687,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         onOpenSettings={() => setIsSettingsOpen(true)}
         userVolumes={userVolumes}
         onVolumeChange={handleVolumeChange}
+        onKickUser={handleKickUser}
       />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
@@ -780,4 +806,3 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     </div>
   );
 }
-
