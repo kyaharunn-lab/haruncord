@@ -1,9 +1,12 @@
+
 "use client"
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { RoomSidebar } from './RoomSidebar';
 import { Hash, MessageSquare } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
 
 interface MainAppProps {
   userName: string;
@@ -12,16 +15,57 @@ interface MainAppProps {
 
 export function MainApp({ userName, onLogout }: MainAppProps) {
   const rooms = ['Genel', 'Oyun', 'Muhabbet'];
+  const voiceChannels = ['Genel Ses', 'Oyun Ses', 'Muhabbet Ses'];
+  
   const [activeRoom, setActiveRoom] = useState(rooms[0]);
+  const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<string | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [hasMicPermission, setHasMicPermission] = useState(false);
+  const { toast } = useToast();
+
+  const handleJoinVoiceChannel = useCallback(async (channel: string) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      // We don't need to keep the stream for this local-only MVP, 
+      // but getting it confirms permission.
+      stream.getTracks().forEach(track => track.stop()); 
+      
+      setHasMicPermission(true);
+      setJoinedVoiceChannel(channel);
+    } catch (error) {
+      console.error('Microphone access denied:', error);
+      setHasMicPermission(false);
+      toast({
+        variant: 'destructive',
+        title: 'Mikrofon Erişimi Reddedildi',
+        description: 'Sesli kanala katılmak için mikrofon izni vermeniz gerekiyor.',
+      });
+    }
+  }, [toast]);
+
+  const handleLeaveVoiceChannel = useCallback(() => {
+    setJoinedVoiceChannel(null);
+    setIsMuted(false);
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setIsMuted(prev => !prev);
+  }, []);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <RoomSidebar 
         rooms={rooms} 
+        voiceChannels={voiceChannels}
         activeRoom={activeRoom} 
         onRoomSelect={setActiveRoom} 
         userName={userName}
         onLogout={onLogout}
+        joinedVoiceChannel={joinedVoiceChannel}
+        onJoinVoice={handleJoinVoiceChannel}
+        onLeaveVoice={handleLeaveVoiceChannel}
+        isMuted={isMuted}
+        onToggleMute={toggleMute}
       />
       
       {/* Main Content Area */}
@@ -43,9 +87,6 @@ export function MainApp({ userName, onLogout }: MainAppProps) {
               </div>
               <h2 className="text-2xl font-bold">Hoş geldin, {userName}!</h2>
               <p className="max-w-xs mt-2 italic text-sm">Burası {activeRoom} odası. Henüz mesaj yok, ilk sen bir şeyler söyleyebilirsin.</p>
-              <div className="mt-8 p-3 bg-primary/10 border border-primary/20 rounded-lg max-w-sm text-xs text-primary font-medium">
-                Sesli sohbet özelliği yakında eklenecek!
-              </div>
             </div>
           </div>
 
