@@ -51,8 +51,81 @@ export const addLocalTracks = (pc: RTCPeerConnection, stream: MediaStream) => {
       pc.addTrack(track, stream);
     });
   } catch (error) {
-    console.error('Local track eklenirken hata oluştu:', error);
+    console.error('Yerel track eklenirken hata oluştu:', error);
   }
+};
+
+/**
+ * Bir SDP teklifi (Offer) oluşturur.
+ */
+export const createOffer = async (pc: RTCPeerConnection): Promise<RTCSessionDescriptionInit | null> => {
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    return offer;
+  } catch (error) {
+    console.error('Teklif (Offer) oluşturulurken hata oluştu:', error);
+    return null;
+  }
+};
+
+/**
+ * Bir SDP yanıtı (Answer) oluşturur.
+ */
+export const createAnswer = async (pc: RTCPeerConnection, offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit | null> => {
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    return answer;
+  } catch (error) {
+    console.error('Yanıt (Answer) oluşturulurken hata oluştu:', error);
+    return null;
+  }
+};
+
+/**
+ * Uzak SDP açıklamasını ayarlar.
+ */
+export const setRemoteDescription = async (pc: RTCPeerConnection, desc: RTCSessionDescriptionInit) => {
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(desc));
+  } catch (error) {
+    console.error('Uzak açıklama ayarlanırken hata oluştu:', error);
+  }
+};
+
+/**
+ * ICE adayını PeerConnection'a ekler.
+ */
+export const addIceCandidate = async (pc: RTCPeerConnection, candidate: RTCIceCandidateInit) => {
+  try {
+    if (candidate) {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  } catch (error) {
+    console.error('ICE adayı eklenirken hata oluştu:', error);
+  }
+};
+
+/**
+ * ICE adaylarını toplamak için bir event listener ayarlar.
+ */
+export const collectIceCandidates = (pc: RTCPeerConnection, onCandidate: (candidate: RTCIceCandidate | null) => void) => {
+  pc.onicecandidate = (event) => {
+    onCandidate(event.candidate);
+  };
+};
+
+/**
+ * Test amaçlı boş bir teklif oluşturur.
+ */
+export const createTestOffer = async (): Promise<RTCSessionDescriptionInit | null> => {
+  const pc = createPeerConnection();
+  if (!pc) return null;
+  const offer = await createOffer(pc);
+  pc.close();
+  return offer;
 };
 
 /**
@@ -62,10 +135,7 @@ export const closePeerConnection = (pc: RTCPeerConnection | null) => {
   if (!pc) return;
   
   try {
-    // Bağlantıyı kapat
     pc.close();
-    
-    // Event listener'ları temizlemek gerekebilir (bağlantı kurulduğunda eklenecekler)
     pc.onicecandidate = null;
     pc.ontrack = null;
     pc.onconnectionstatechange = null;
