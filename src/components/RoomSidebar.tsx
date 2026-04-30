@@ -1,3 +1,4 @@
+
 "use client"
 
 import { Button } from '@/components/ui/button';
@@ -20,6 +21,7 @@ interface RoomSidebarProps {
   onLeaveVoice: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
+  isSpeaking?: boolean;
 }
 
 function ChannelUserList({ channelId }: { channelId: string }) {
@@ -62,7 +64,8 @@ export function RoomSidebar({
   onJoinVoice,
   onLeaveVoice,
   isMuted,
-  onToggleMute
+  onToggleMute,
+  isSpeaking = false
 }: RoomSidebarProps) {
   return (
     <TooltipProvider>
@@ -169,7 +172,10 @@ export function RoomSidebar({
         <div className="bg-black/20 p-2 flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
             <div className="relative">
-              <UserCircle2 className="w-8 h-8 text-accent" />
+              <UserCircle2 className={cn(
+                "w-8 h-8 text-accent transition-all duration-200",
+                isSpeaking && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#1F1A26] rounded-full"
+              )} />
               <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#1F1A26] rounded-full"></div>
             </div>
             <div className="flex flex-col min-w-0">

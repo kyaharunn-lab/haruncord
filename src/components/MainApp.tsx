@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -23,6 +24,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const [activeRoom, setActiveRoom] = useState(rooms[0]);
   const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   
   const localStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -30,6 +32,57 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
   const { toast } = useToast();
   const db = useFirestore();
   const { user } = useUser();
+
+  // Voice Activity Detection (VAD)
+  useEffect(() => {
+    if (!localStreamRef.current || isMuted || !joinedVoiceChannel) {
+      setIsSpeaking(false);
+      return;
+    }
+
+    let audioContext: AudioContext;
+    let analyser: AnalyserNode;
+    let source: MediaStreamAudioSourceNode;
+    let animationId: number;
+    let lastSpeakState = false;
+
+    try {
+      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      analyser = audioContext.createAnalyser();
+      source = audioContext.createMediaStreamSource(localStreamRef.current);
+      source.connect(analyser);
+      
+      analyser.fftSize = 256;
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      const checkVolume = () => {
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / bufferLength;
+        const speaking = average > 15; // Ses eşiği
+
+        if (speaking !== lastSpeakState) {
+          setIsSpeaking(speaking);
+          lastSpeakState = speaking;
+          console.log(speaking ? "mikrofon ses algılıyor" : "mikrofon sessiz");
+        }
+        animationId = requestAnimationFrame(checkVolume);
+      };
+
+      checkVolume();
+    } catch (err) {
+      console.error("Ses analizi başlatılamadı:", err);
+    }
+
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId);
+      if (audioContext) audioContext.close();
+    };
+  }, [joinedVoiceChannel, isMuted]);
 
   // Presence Query
   const activePresenceQuery = useMemoFirebase(() => {
@@ -159,18 +212,15 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       for (const answerDoc of answers) {
         if (answerDoc.targetUserId === userId) {
           if (processedIdsRef.current.has(answerDoc.id)) {
-            console.log('duplicate answer atlandı');
             continue;
           }
 
           if (pc.signalingState === 'stable') {
-            console.log('duplicate answer atlandı');
             processedIdsRef.current.add(answerDoc.id);
             continue;
           }
 
           if (pc.signalingState !== 'have-local-offer') {
-            console.log('yanlış state nedeniyle answer atlandı');
             continue;
           }
 
@@ -287,6 +337,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     }
     processedIdsRef.current.clear();
     setJoinedVoiceChannel(null);
+    setIsSpeaking(false);
   }, []);
 
   const toggleMute = useCallback(() => {
@@ -296,6 +347,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         track.enabled = !newMuteState;
       });
       setIsMuted(newMuteState);
+      if (newMuteState) setIsSpeaking(false);
     }
   }, [isMuted]);
 
@@ -321,6 +373,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         onLeaveVoice={handleLeaveVoiceChannel}
         isMuted={isMuted}
         onToggleMute={toggleMute}
+        isSpeaking={isSpeaking}
       />
       
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
@@ -351,26 +404,35 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                   </h3>
                   <div className="space-y-1">
                     {joinedVoiceChannel && channelUsers ? (
-                      channelUsers.map((u) => (
-                        <div key={u.id} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
-                          <div className="relative">
-                            <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs">
-                              {u.displayName.charAt(0).toUpperCase()}
+                      channelUsers.map((u) => {
+                        const isThisUser = u.userId === userId;
+                        return (
+                          <div key={u.id} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
+                            <div className="relative">
+                              <div className={cn(
+                                "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs transition-all duration-200",
+                                isThisUser && isSpeaking && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
+                              )}>
+                                {u.displayName.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full"></div>
                             </div>
-                            <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full"></div>
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-sm font-medium text-accent truncate">{u.displayName}</span>
+                              <span className="text-[10px] text-muted-foreground truncate leading-none">
+                                {u.isMuted ? 'Susturuldu' : 'Sesli'}
+                              </span>
+                            </div>
                           </div>
-                          <div className="flex flex-col min-w-0">
-                            <span className="text-sm font-medium text-accent truncate">{u.displayName}</span>
-                            <span className="text-[10px] text-muted-foreground truncate leading-none">
-                              {u.isMuted ? 'Susturuldu' : 'Sesli'}
-                            </span>
-                          </div>
-                        </div>
-                      ))
+                        );
+                      })
                     ) : (
                       <div className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors cursor-pointer group">
                         <div className="relative">
-                          <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs">
+                          <div className={cn(
+                            "w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-foreground font-bold text-xs transition-all duration-200",
+                            isSpeaking && "ring-2 ring-green-500 ring-offset-2 ring-offset-[#312B38]"
+                          )}>
                             {userName.charAt(0).toUpperCase()}
                           </div>
                           <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#312B38] rounded-full"></div>
