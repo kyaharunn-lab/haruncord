@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
 import { AudioSettings } from "@/lib/webrtc";
 
 interface AudioSettingsDialogProps {
@@ -37,7 +38,6 @@ export function AudioSettingsDialog({
   useEffect(() => {
     const fetchDevices = async () => {
       try {
-        // Permissions are required to see labels
         await navigator.mediaDevices.getUserMedia({ audio: true });
         const devices = await navigator.mediaDevices.enumerateDevices();
         
@@ -109,19 +109,26 @@ export function AudioSettingsDialog({
 
           <div className="h-px bg-border my-2" />
 
+          {/* Noise Gate Hassasiyeti */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <Label className="text-sm font-semibold">Mikrofon Hassasiyeti (Noise Gate)</Label>
+              <span className="text-xs text-muted-foreground">%{Math.round((settings.micSensitivity ?? 0.02) * 100)}</span>
+            </div>
+            <p className="text-[11px] text-muted-foreground">Konuşmadığınızda sesin tamamen kesilmesi için gereken eşik seviyesi.</p>
+            <Slider
+              value={[(settings.micSensitivity ?? 0.02) * 100]}
+              max={100}
+              step={1}
+              onValueChange={(val) => updateSetting("micSensitivity", val[0] / 100)}
+              className="py-2"
+            />
+          </div>
+
+          <div className="h-px bg-border my-2" />
+
           {/* Ses İşleme Ayarları */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label className="text-sm font-semibold">Gürültü Azaltma</Label>
-                <p className="text-xs text-muted-foreground">Arka plan seslerini temizler.</p>
-              </div>
-              <Switch
-                checked={settings.noiseSuppression}
-                onCheckedChange={(val) => updateSetting("noiseSuppression", val)}
-              />
-            </div>
-
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <Label className="text-sm font-semibold">Yankı Önleme</Label>
@@ -130,6 +137,17 @@ export function AudioSettingsDialog({
               <Switch
                 checked={settings.echoCancellation}
                 onCheckedChange={(val) => updateSetting("echoCancellation", val)}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-semibold">Gürültü Azaltma (Donanımsal)</Label>
+                <p className="text-xs text-muted-foreground">Arka plan seslerini temizler.</p>
+              </div>
+              <Switch
+                checked={settings.noiseSuppression}
+                onCheckedChange={(val) => updateSetting("noiseSuppression", val)}
               />
             </div>
 

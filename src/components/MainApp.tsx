@@ -52,6 +52,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
+    micSensitivity: 0.02,
     deviceId: "default",
     outputDeviceId: "default",
   });
@@ -98,12 +99,12 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     setMessageText("");
   };
 
-  // --- Sesli Sohbet Mantığı (Mevcut) ---
+  // --- Sesli Sohbet Mantığı ---
   useEffect(() => {
     const savedAudio = localStorage.getItem("kanka_audio_settings");
     if (savedAudio) {
       try {
-        setAudioSettings(JSON.parse(savedAudio));
+        setAudioSettings(prev => ({ ...prev, ...JSON.parse(savedAudio) }));
       } catch (e) {
         console.error("Ses ayarları yüklenemedi:", e);
       }
@@ -225,13 +226,13 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         analyser.getByteFrequencyData(dataArray);
         const sum = dataArray.reduce((total, value) => total + value, 0);
         const average = sum / bufferLength;
-        const speaking = average > 15;
+        // Hassasiyet eşiğine göre konuşma göstergesini güncelle
+        const threshold = (audioSettings.micSensitivity ?? 0.02) * 255;
+        const speaking = average > threshold;
 
         if (speaking !== lastSpeakState) {
           setIsSpeaking(speaking);
           lastSpeakState = speaking;
-          if (speaking) console.log("mikrofon ses algılıyor");
-          else console.log("mikrofon sessiz");
         }
         animationId = requestAnimationFrame(checkVolume);
       };
@@ -244,7 +245,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext) audioContext.close();
     };
-  }, [joinedVoiceChannel, isMuted, audioSettings]);
+  }, [joinedVoiceChannel, isMuted, audioSettings.micSensitivity]);
 
   useEffect(() => {
     if (!db || !joinedVoiceChannel || !userId) return;
@@ -263,7 +264,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
 
     updatePresence();
-    const heartbeat = setInterval(updatePresence, 5000); // 5s heartbeat
+    const heartbeat = setInterval(updatePresence, 5000);
 
     const handleUnload = () => {
       deleteDocumentNonBlocking(presenceRef);
@@ -340,7 +341,6 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
     };
 
     pc.ontrack = (event) => {
-      console.log("remote stream geldi");
       const remoteStream = event.streams[0];
       if (!remoteStream) return;
 
@@ -365,9 +365,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
         remoteAudioRef.current.volume = volume / 100;
       }
 
-      remoteAudioRef.current.play()
-        .then(() => console.log("remote audio oynatılıyor"))
-        .catch(e => console.error("remote audio oynatma hatası:", e));
+      remoteAudioRef.current.play().catch(e => console.error("remote audio oynatma hatası:", e));
     };
 
     if (localStreamRef.current) {
@@ -609,7 +607,7 @@ export function MainApp({ userName, userId, onLogout }: MainAppProps) {
                   className="absolute right-1 top-1 h-9 w-9 text-muted-foreground hover:text-primary"
                   disabled={!messageText.trim()}
                 >
-                  <Send className="w-5 h-5" />
+                  <Hash className="w-5 h-5" />
                 </Button>
               </form>
             </div>

@@ -8,6 +8,7 @@ export interface AudioSettings {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
+  micSensitivity?: number; // 0.0 - 1.0 arası hassasiyet eşiği
 }
 
 /**
@@ -24,19 +25,18 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     const source = audioContext.createMediaStreamSource(stream);
     const destination = audioContext.createMediaStreamDestination();
 
-    // 1. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları (fan, klima vb.) temizler.
+    // 1. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları temizler.
     const highPass = audioContext.createBiquadFilter();
     highPass.type = 'highpass';
     highPass.frequency.setValueAtTime(150, audioContext.currentTime);
-    highPass.Q.setValueAtTime(0.7, audioContext.currentTime);
 
-    // 2. Peaking Filter: İnsan sesinin netliğini artırmak için 3kHz civarını hafifçe parlatır.
+    // 2. Peaking Filter: Netlik için 3kHz civarını parlatır.
     const clarityFilter = audioContext.createBiquadFilter();
     clarityFilter.type = 'peaking';
     clarityFilter.frequency.setValueAtTime(3000, audioContext.currentTime);
     clarityFilter.gain.setValueAtTime(3, audioContext.currentTime);
 
-    // 3. Dynamics Compressor: Ani ses yükselmelerini engeller ve kısık sesleri dengeler.
+    // 3. Dynamics Compressor: Ses seviyesini dengeler.
     const compressor = audioContext.createDynamicsCompressor();
     compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
     compressor.knee.setValueAtTime(30, audioContext.currentTime);
@@ -44,13 +44,56 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     compressor.attack.setValueAtTime(0.003, audioContext.currentTime);
     compressor.release.setValueAtTime(0.25, audioContext.currentTime);
 
-    // Zinciri oluştur: Source -> HighPass -> Clarity -> Compressor -> Destination
+    // 4. Noise Gate (Gürültü Kapısı): Sessizlikte sesi tamamen keser.
+    const gateGain = audioContext.createGain();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    
+    // İşleme zinciri: Source -> Analyser (Ölçüm için) -> HighPass -> Clarity -> Compressor -> GateGain -> Destination
+    source.connect(analyser);
     source.connect(highPass);
     highPass.connect(clarityFilter);
     clarityFilter.connect(compressor);
-    compressor.connect(destination);
+    compressor.connect(gateGain);
+    gateGain.connect(destination);
 
-    // İşlenmiş akışı döndür
+    // Gate Mantığı (Threshold kontrolü)
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    let isOpen = false;
+    const threshold = (settings.micSensitivity ?? 0.02) * 255;
+
+    const updateGate = () => {
+      analyser.getByteFrequencyData(dataArray);
+      const sum = dataArray.reduce((a, b) => a + b, 0);
+      const average = sum / dataArray.length;
+
+      if (average > threshold) {
+        if (!isOpen) {
+          // Attack: Sesi yumuşakça aç (50ms)
+          gateGain.gain.setTargetAtTime(1, audioContext.currentTime, 0.05);
+          isOpen = true;
+        }
+      } else {
+        if (isOpen) {
+          // Release: Sesi yumuşakça kapat (200ms)
+          gateGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.2);
+          isOpen = false;
+        }
+      }
+    };
+
+    const gateInterval = setInterval(updateGate, 50);
+
+    // Temizlik: Track durduğunda intervali ve context'i temizle
+    stream.getTracks().forEach(track => {
+      track.addEventListener('ended', () => {
+        clearInterval(gateInterval);
+        if (audioContext.state !== 'closed') {
+          audioContext.close();
+        }
+      });
+    });
+
     return destination.stream;
   } catch (error) {
     console.error("Ses işleme zinciri kurulamadı, ham ses kullanılıyor:", error);
@@ -69,13 +112,12 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
       channelCount: 1,
       latency: 0,
       
-      // Donanımsal hızlandırma ve özel algoritmalar
+      // Google/Chrome spesifik iyileştirmeler
       googEchoCancellation: true,
       googAutoGainControl: true,
       googNoiseSuppression: true,
       googHighpassFilter: true,
       googTypingNoiseDetection: true,
-      googAudioMirroring: false,
     };
 
     const constraints: MediaStreamConstraints = {
@@ -85,9 +127,7 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
 
     const rawStream = await navigator.mediaDevices.getUserMedia(constraints);
     
-    // Eğer ayarlar uygunsa ses işleme zincirini uygula
     if (rawStream && settings) {
-      console.log("Gelişmiş ses işleme zinciri aktif edildi.");
       return processAudioStream(rawStream, settings);
     }
 
@@ -124,12 +164,10 @@ export const addLocalTracks = (
       const alreadyAdded = senders.some((sender) => sender.track === track);
 
       if (alreadyAdded) {
-        console.log("Track zaten eklenmiş, atlandı.");
         return;
       }
 
       pc.addTrack(track, stream);
-      console.log("Audio track eklendi.");
     });
   } catch (error) {
     console.error("Yerel track eklenirken hata oluştu:", error);
@@ -144,7 +182,6 @@ export const createOffer = async (
       offerToReceiveAudio: true,
     });
     await pc.setLocalDescription(offer);
-    console.log("Offer oluşturuldu.");
     return offer;
   } catch (error) {
     console.error("Offer oluşturulurken hata oluştu:", error);
@@ -158,7 +195,6 @@ export const createAnswer = async (
 ): Promise<RTCSessionDescriptionInit | null> => {
   try {
     if (pc.signalingState !== "stable") {
-      console.log("Offer uygulanamadı, signalingState:", pc.signalingState);
       return null;
     }
 
@@ -167,7 +203,6 @@ export const createAnswer = async (
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    console.log("Answer oluşturuldu.");
     return answer;
   } catch (error) {
     console.error("Answer oluşturulurken hata oluştu:", error);
@@ -182,26 +217,17 @@ export const applyRemoteDescription = async (
   try {
     if (desc.type === "answer") {
       if (pc.signalingState !== "have-local-offer") {
-        console.log(
-          "Answer atlandı. Yanlış signalingState:",
-          pc.signalingState
-        );
         return;
       }
     }
 
     if (desc.type === "offer") {
       if (pc.signalingState !== "stable") {
-        console.log(
-          "Offer atlandı. Yanlış signalingState:",
-          pc.signalingState
-        );
         return;
       }
     }
 
     await pc.setRemoteDescription(new RTCSessionDescription(desc));
-    console.log("Remote description uygulandı:", desc.type);
   } catch (error) {
     console.error("Remote description ayarlanırken hata oluştu:", error);
   }
@@ -217,7 +243,6 @@ export const addIceCandidate = async (
     if (!candidate) return;
 
     await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    console.log("ICE candidate eklendi.");
   } catch (error) {
     console.error("ICE candidate eklenirken hata oluştu:", error);
   }
@@ -246,8 +271,6 @@ export const closePeerConnection = (pc: RTCPeerConnection | null): void => {
     pc.onsignalingstatechange = null;
 
     pc.close();
-
-    console.log("PeerConnection kapatıldı.");
   } catch (error) {
     console.error("Bağlantı kapatılırken hata oluştu:", error);
   }
@@ -262,11 +285,10 @@ export const setAudioOutputDevice = async (
   if ('setSinkId' in element) {
     try {
       await (element as any).setSinkId(deviceId);
-      console.log("Hoparlör çıkışı değiştirildi:", deviceId);
     } catch (error) {
       console.error("Hoparlör çıkışı değiştirilemedi:", error);
     }
   } else {
-    console.warn("Bu tarayıcı setSinkId (hoparlör seçimi) özelliğini desteklemiyor.");
+    console.warn("Bu tarayıcı setSinkId özelliğini desteklemiyor.");
   }
 };
