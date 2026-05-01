@@ -25,18 +25,18 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     const source = audioContext.createMediaStreamSource(stream);
     const destination = audioContext.createMediaStreamDestination();
 
-    // 1. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları temizler.
+    // 1. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları (fan, klima vb.) temizler.
     const highPass = audioContext.createBiquadFilter();
     highPass.type = 'highpass';
     highPass.frequency.setValueAtTime(150, audioContext.currentTime);
 
-    // 2. Peaking Filter: Netlik için 3kHz civarını parlatır.
+    // 2. Peaking Filter: Netlik için konuşma frekanslarını (3kHz civarı) hafifçe parlatır.
     const clarityFilter = audioContext.createBiquadFilter();
     clarityFilter.type = 'peaking';
     clarityFilter.frequency.setValueAtTime(3000, audioContext.currentTime);
     clarityFilter.gain.setValueAtTime(3, audioContext.currentTime);
 
-    // 3. Dynamics Compressor: Ses seviyesini dengeler.
+    // 3. Dynamics Compressor: Ses seviyesini dengeler, ani yükselmeleri önler ve kısık sesleri duyulur yapar.
     const compressor = audioContext.createDynamicsCompressor();
     compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
     compressor.knee.setValueAtTime(30, audioContext.currentTime);
@@ -57,10 +57,12 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     compressor.connect(gateGain);
     gateGain.connect(destination);
 
-    // Gate Mantığı (Threshold kontrolü)
+    // Gate Mantığı (Hassasiyet kontrolü)
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     let isOpen = false;
-    const threshold = (settings.micSensitivity ?? 0.02) * 255;
+    
+    // Kullanıcının ayarladığı hassasiyet (default 0.03, Discord'a yakındır)
+    const threshold = (settings.micSensitivity ?? 0.03) * 255;
 
     const updateGate = () => {
       analyser.getByteFrequencyData(dataArray);
@@ -69,22 +71,22 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
 
       if (average > threshold) {
         if (!isOpen) {
-          // Attack: Sesi yumuşakça aç (50ms)
-          gateGain.gain.setTargetAtTime(1, audioContext.currentTime, 0.05);
+          // Attack: Sesi çok hızlı ve yumuşakça aç (10ms)
+          gateGain.gain.setTargetAtTime(1, audioContext.currentTime, 0.01);
           isOpen = true;
         }
       } else {
         if (isOpen) {
-          // Release: Sesi yumuşakça kapat (200ms)
+          // Release: Sesi yumuşakça kapat (200ms), kelime sonları kesilmesin.
           gateGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.2);
           isOpen = false;
         }
       }
     };
 
-    const gateInterval = setInterval(updateGate, 50);
+    const gateInterval = setInterval(updateGate, 30);
 
-    // Temizlik: Track durduğunda intervali ve context'i temizle
+    // Temizlik: Track durduğunda kaynakları temizle
     stream.getTracks().forEach(track => {
       track.addEventListener('ended', () => {
         clearInterval(gateInterval);

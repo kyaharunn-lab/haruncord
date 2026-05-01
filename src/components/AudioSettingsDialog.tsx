@@ -113,11 +113,11 @@ export function AudioSettingsDialog({
           <div className="space-y-3">
             <div className="flex justify-between items-center">
               <Label className="text-sm font-semibold">Mikrofon Hassasiyeti (Noise Gate)</Label>
-              <span className="text-xs text-muted-foreground">%{Math.round((settings.micSensitivity ?? 0.02) * 100)}</span>
+              <span className="text-xs text-muted-foreground">%{Math.round((settings.micSensitivity ?? 0.03) * 100)}</span>
             </div>
             <p className="text-[11px] text-muted-foreground">Konuşmadığınızda sesin tamamen kesilmesi için gereken eşik seviyesi.</p>
             <Slider
-              value={[(settings.micSensitivity ?? 0.02) * 100]}
+              value={[(settings.micSensitivity ?? 0.03) * 100]}
               max={100}
               step={1}
               onValueChange={(val) => updateSetting("micSensitivity", val[0] / 100)}
