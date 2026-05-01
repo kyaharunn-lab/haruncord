@@ -131,6 +131,7 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     return destination.stream;
   } catch (error) {
     console.error("Gelişmiş ses işleme hatası (Raw Mic'e dönülüyor):", error);
+    console.log("raw microphone fallback kullanıldı");
     return stream;
   }
 };
@@ -147,7 +148,7 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
     };
 
     const rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
-    console.log("🎤 Mikrofon stream alındı");
+    console.log("mikrofon alındı");
     
     if (rawStream && settings) {
       try {
@@ -156,6 +157,7 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
         return processed;
       } catch (e) {
         console.warn("⚠️ İşlenmiş stream oluşturulamadı, ham ses kullanılıyor");
+        console.log("raw microphone fallback kullanıldı");
         return rawStream;
       }
     }
@@ -191,10 +193,10 @@ export const addLocalTracks = (
   try {
     const senders = pc.getSenders();
     stream.getTracks().forEach((track) => {
-      const alreadyAdded = senders.some((sender) => sender.track && sender.track.id === track.id);
+      const alreadyAdded = senders.some((sender) => sender.track && (sender.track.id === track.id || sender.track.kind === track.kind));
       if (!alreadyAdded) {
         pc.addTrack(track, stream);
-        console.log(`📡 Local track eklendi: ${track.kind} (${track.id})`);
+        console.log(`track eklendi: ${track.kind}`);
       }
     });
   } catch (error) {
@@ -208,7 +210,7 @@ export const createOffer = async (
   try {
     const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
     await pc.setLocalDescription(offer);
-    console.log("📝 Offer oluşturuldu ve local description olarak ayarlandı");
+    console.log("offer yazıldı");
     return offer;
   } catch (error) {
     console.error("Offer oluşturulurken hata oluştu:", error);
@@ -221,11 +223,12 @@ export const createAnswer = async (
   offer: RTCSessionDescriptionInit
 ): Promise<RTCSessionDescriptionInit | null> => {
   try {
+    if (pc.signalingState === "closed") return null;
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    console.log("📥 Remote offer alındı ve remote description olarak ayarlandı");
+    console.log("offer alındı");
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    console.log("📝 Answer oluşturuldu ve local description olarak ayarlandı");
+    console.log("answer yazıldı");
     return answer;
   } catch (error) {
     console.error("Answer oluşturulurken hata oluştu:", error);
@@ -240,7 +243,7 @@ export const applyRemoteDescription = async (
   try {
     if (pc.signalingState === "closed") return;
     await pc.setRemoteDescription(new RTCSessionDescription(desc));
-    console.log(`📥 Remote ${desc.type} başarıyla uygulandı`);
+    console.log(`${desc.type} alındı`);
   } catch (error) {
     console.error("Remote description ayarlanırken hata oluştu:", error);
   }
@@ -255,9 +258,9 @@ export const addIceCandidate = async (
   try {
     if (!candidate || pc.signalingState === "closed") return;
     await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    console.log("❄️ ICE candidate başarıyla eklendi");
+    console.log("ICE alındı");
   } catch (error) {
-    console.warn("⚠️ ICE candidate eklenemedi (muhtemelen remote description henüz hazır değil):", error);
+    console.warn("⚠️ ICE candidate eklenemedi:", error);
   }
 };
 

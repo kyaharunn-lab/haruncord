@@ -341,14 +341,14 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (!pc) return null;
     pc.onicecandidate = (event) => {
       if (event.candidate && db && joinedVoiceChannel && callInfo) {
-        console.log("❄️ Local ICE candidate bulundu, gönderiliyor...");
+        console.log("ICE gönderildi");
         const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates");
         addDocumentNonBlocking(candsRef, { userId, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
       }
     };
     pc.ontrack = (event) => {
       const stream = event.streams[0];
-      console.log(`📡 Remote track alındı: ${event.track.kind}`);
+      console.log(`remote stream geldi: ${event.track.kind}`);
       if (event.track.kind === 'audio') {
         if (!remoteAudioRef.current) {
           console.log("🔈 Remote audio elementi oluşturuluyor");
@@ -362,7 +362,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         remoteAudioRef.current.muted = isDeafened;
         const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
         if (targetId) remoteAudioRef.current.volume = (userVolumes[targetId] ?? 100) / 100;
-        remoteAudioRef.current.play().then(() => console.log("🔊 Remote audio çalmaya başladı")).catch(e => console.error("❌ Audio play hatası:", e));
+        remoteAudioRef.current.play().then(() => console.log("remote audio oynatılıyor")).catch(e => console.error("❌ Audio play hatası:", e));
       } else if (event.track.kind === 'video') {
         const isScreen = stream.getVideoTracks()[0]?.label.toLowerCase().includes('screen');
         if (isScreen) {
@@ -381,15 +381,20 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       }
     };
     pc.onconnectionstatechange = () => {
-      console.log(`🔌 Bağlantı durumu değişti: ${pc.connectionState}`);
-      if (pc.connectionState === 'connected') console.log("✅ Peer Connected!");
+      if (pc.connectionState === 'connected') console.log("peer connected");
     };
     if (localStreamRef.current) addLocalTracks(pc, localStreamRef.current);
     if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(track => pc.addTrack(track, screenStreamRef.current!));
+      screenStreamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, screenStreamRef.current!);
+        console.log("track eklendi: video (ekran)");
+      });
     }
     if (cameraStreamRef.current) {
-      cameraStreamRef.current.getTracks().forEach(track => pc.addTrack(track, cameraStreamRef.current!));
+      cameraStreamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, cameraStreamRef.current!);
+        console.log("track eklendi: video (kamera)");
+      });
     }
     return pc;
   }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, userVolumes]);
@@ -404,22 +409,19 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           peerConnectionRef.current = pc;
           const offer = await createOffer(pc);
           if (offer) {
-            console.log("📝 Offer yazıldı");
             setDocumentNonBlocking(callDocRef, { ...callInfo, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
           }
         }
         if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") {
-          console.log("📥 Answer alındı ve uygulanıyor");
+          console.log("answer alındı");
           await setRemoteDescription(peerConnectionRef.current, callData.answer);
         }
       } else if (callData?.offer && !peerConnectionRef.current) {
-        console.log("📥 Offer alındı, cevap veriliyor");
         const pc = setupPeerConnection();
         if (!pc) return;
         peerConnectionRef.current = pc;
         const answer = await createAnswer(pc, callData.offer);
         if (answer) {
-          console.log("📝 Answer yazıldı");
           setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
         }
       }
@@ -432,7 +434,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (peerConnectionRef.current.remoteDescription) {
       remoteCandidates.forEach(doc => {
         if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id)) {
-          console.log("❄️ Remote ICE candidate alındı ve ekleniyor");
           addIceCandidate(peerConnectionRef.current!, doc.candidate);
           processedIceCandidatesRef.current.add(doc.id);
         }
@@ -443,36 +444,64 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (joinedVoiceChannel) playSoundEffect('leave');
     console.log("👋 Kanaldan ayrılınıyor...");
+    
     if (peerConnectionRef.current) closePeerConnection(peerConnectionRef.current);
     peerConnectionRef.current = null;
+    
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
     if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach(t => t.stop()); screenStreamRef.current = null; }
     if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach(t => t.stop()); cameraStreamRef.current = null; }
-    if (db && joinedVoiceChannel && userId) {
-      deleteDocumentNonBlocking(doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId));
-      const q1 = query(collection(db, "voiceChannels", joinedVoiceChannel, "calls"), where("offererId", "==", userId));
-      const q2 = query(collection(db, "voiceChannels", joinedVoiceChannel, "calls"), where("answererId", "==", userId));
-      const snaps = await Promise.all([getDocs(q1), getDocs(q2)]);
-      const batch = writeBatch(db);
-      [...snaps[0].docs, ...snaps[1].docs].forEach(d => batch.delete(d.ref));
-      await batch.commit();
+    
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+      remoteAudioRef.current.remove();
+      remoteAudioRef.current = null;
     }
+
+    if (db && joinedVoiceChannel && userId) {
+      const channelId = joinedVoiceChannel;
+      deleteDocumentNonBlocking(doc(db, "voiceChannels", channelId, "presence", userId));
+      
+      try {
+        const q1 = query(collection(db, "voiceChannels", channelId, "calls"), where("offererId", "==", userId));
+        const q2 = query(collection(db, "voiceChannels", channelId, "calls"), where("answererId", "==", userId));
+        const snaps = await Promise.all([getDocs(q1), getDocs(q2)]);
+        const batch = writeBatch(db);
+        [...snaps[0].docs, ...snaps[1].docs].forEach(d => {
+          batch.delete(d.ref);
+          // Adayları da temizle
+          const candsRef = collection(db, "voiceChannels", channelId, "calls", d.id, "candidates");
+          getDocs(candsRef).then(cSnap => {
+            const cBatch = writeBatch(db);
+            cSnap.docs.forEach(cd => cBatch.delete(cd.ref));
+            cBatch.commit();
+          });
+        });
+        await batch.commit();
+      } catch (e) {
+        console.error("Temizlik hatası:", e);
+      }
+    }
+    
     processedIceCandidatesRef.current.clear();
     setJoinedVoiceChannel(null);
     setIsSpeaking(false);
     setIsScreenSharing(false);
     setIsCameraOn(false);
     setHasRemoteVideo(false);
+    console.log("ses kanalı temizlendi");
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
     setActiveView({ type: 'voice', id: channel });
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
+    
     try {
       console.log(`🎤 ${channel} kanalına katılınıyor...`);
       const stream = await getLocalAudioStream(audioSettings);
-      if (!stream) throw new Error();
+      if (!stream) throw new Error("Mikrofon alınamadı");
+      
       localStreamRef.current = stream;
       setJoinedVoiceChannel(channel);
       setIsMuted(false);
