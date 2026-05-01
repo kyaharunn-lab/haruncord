@@ -127,7 +127,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     try {
       await deleteDoc(doc(db, type === "text" ? "textChannels" : "voiceChannels", id));
       if (type === "text" && activeView.id === id) setActiveView({ type: 'text', id: 'Genel' });
-      if (type === "voice" && joinedVoiceChannel === id) handleLeaveVoiceChannel();
+      if (type === "voice" && joinedVoiceChannel === id) await handleLeaveVoiceChannel();
       toast({ title: "Kanal Silindi", description: `${id} başarıyla kaldırıldı.` });
     } catch (e) {
       console.error(e);
@@ -483,18 +483,23 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     setIsCameraOn(false);
     setHasRemoteVideo(false);
 
-    // Kilit kaldırma
-    setTimeout(() => {
-      isCleaningUpRef.current = false;
-      console.log("cleanup kilidi açıldı - tam cleanup bitti");
-    }, 500);
+    isCleaningUpRef.current = false;
+    console.log("cleanup kilidi açıldı - tam cleanup bitti");
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
-    if (isCleaningUpRef.current) return;
+    while (isCleaningUpRef.current) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    
+    await handleLeaveVoiceChannel();
+    
+    while (isCleaningUpRef.current) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+
     setActiveView({ type: 'voice', id: channel });
     if (joinedVoiceChannel === channel) return;
-    if (joinedVoiceChannel) await handleLeaveVoiceChannel();
     
     try {
       console.log(`🎤 ${channel} kanalına katılınıyor...`);
@@ -513,36 +518,51 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, playSoundEffect, toast]);
 
   const handleToggleScreenShare = async () => {
-    if (isCleaningUpRef.current || !joinedVoiceChannel) return;
+    if (isCleaningUpRef.current || !joinedVoiceChannel || !peerConnectionRef.current) return;
     if (isScreenSharing) {
       screenStreamRef.current?.getTracks().forEach(t => t.stop());
       screenStreamRef.current = null;
       setIsScreenSharing(false);
-      handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+      // Trigger renegotiation
+      const offer = await createOffer(peerConnectionRef.current);
+      if (offer && callDocRef) {
+        setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+      }
     } else {
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         screenStreamRef.current = stream;
+        stream.getTracks().forEach(t => peerConnectionRef.current?.addTrack(t, stream));
         setIsScreenSharing(true);
         stream.getVideoTracks()[0].onended = () => handleToggleScreenShare();
-        handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+        const offer = await createOffer(peerConnectionRef.current);
+        if (offer && callDocRef) {
+          setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+        }
       } catch (err) { console.error(err); }
     }
   };
 
   const handleToggleCamera = async () => {
-    if (isCleaningUpRef.current || !joinedVoiceChannel) return;
+    if (isCleaningUpRef.current || !joinedVoiceChannel || !peerConnectionRef.current) return;
     if (isCameraOn) {
       cameraStreamRef.current?.getTracks().forEach(t => t.stop());
       cameraStreamRef.current = null;
       setIsCameraOn(false);
-      handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+      const offer = await createOffer(peerConnectionRef.current);
+      if (offer && callDocRef) {
+        setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+      }
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         cameraStreamRef.current = stream;
+        stream.getTracks().forEach(t => peerConnectionRef.current?.addTrack(t, stream));
         setIsCameraOn(true);
-        handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
+        const offer = await createOffer(peerConnectionRef.current);
+        if (offer && callDocRef) {
+          setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+        }
       } catch (err) {
         console.error(err);
         toast({ variant: "destructive", title: "Hata", description: "Kameraya erişilemedi." });
