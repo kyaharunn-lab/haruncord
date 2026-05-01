@@ -446,82 +446,100 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (isCleaningUpRef.current) return;
     
+    const currentChannel = joinedVoiceChannel;
+    if (!currentChannel) {
+      peerConnectionRef.current = null;
+      localStreamRef.current = null;
+      return;
+    }
+
     console.log("🧹 cleanup kilidi kapandı - tam cleanup başladı");
     isCleaningUpRef.current = true;
-    connectionSessionRef.current += 1; // Eski session'ı iptal et
-    const currentChannel = joinedVoiceChannel;
+    connectionSessionRef.current += 1;
+    
     setJoinedVoiceChannel(null);
     playSoundEffect('leave');
     
-    // WebRTC Temizliği
-    if (peerConnectionRef.current) {
-      closePeerConnection(peerConnectionRef.current);
-      peerConnectionRef.current = null;
-    }
-    
-    if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
-    if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach(t => t.stop()); screenStreamRef.current = null; }
-    if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach(t => t.stop()); cameraStreamRef.current = null; }
-    
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.srcObject = null;
-      remoteAudioRef.current.remove();
-      remoteAudioRef.current = null;
-    }
+    try {
+      // WebRTC Temizliği
+      if (peerConnectionRef.current) {
+        closePeerConnection(peerConnectionRef.current);
+        peerConnectionRef.current = null;
+      }
+      
+      if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
+      if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach(t => t.stop()); screenStreamRef.current = null; }
+      if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach(t => t.stop()); cameraStreamRef.current = null; }
+      
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.pause();
+        remoteAudioRef.current.srcObject = null;
+        remoteAudioRef.current.remove();
+        remoteAudioRef.current = null;
+      }
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+      }
 
-    // Firestore Temizliği
-    if (db && currentChannel && userId) {
-      deleteDocumentNonBlocking(doc(db, "voiceChannels", currentChannel, "presence", userId));
-      try {
-        const q1 = query(collection(db, "voiceChannels", currentChannel, "calls"), where("offererId", "==", userId));
-        const q2 = query(collection(db, "voiceChannels", currentChannel, "calls"), where("answererId", "==", userId));
-        const snaps = await Promise.all([getDocs(q1), getDocs(q2)]);
-        const batch = writeBatch(db);
-        [...snaps[0].docs, ...snaps[1].docs].forEach(d => {
-          batch.delete(d.ref);
-          const candsRef = collection(db, "voiceChannels", currentChannel, "calls", d.id, "candidates");
-          getDocs(candsRef).then(cSnap => {
-            const cBatch = writeBatch(db);
-            cSnap.docs.forEach(cd => cBatch.delete(cd.ref));
-            cBatch.commit().catch(() => {});
-          });
-        });
-        await batch.commit();
-      } catch (e) { console.warn("Firestore cleanup hatası", e); }
+      // Firestore Temizliği
+      if (db && currentChannel && userId) {
+        deleteDocumentNonBlocking(doc(db, "voiceChannels", currentChannel, "presence", userId));
+        
+        try {
+          const q1 = query(collection(db, "voiceChannels", currentChannel, "calls"), where("offererId", "==", userId));
+          const q2 = query(collection(db, "voiceChannels", currentChannel, "calls"), where("answererId", "==", userId));
+          const snaps = await Promise.all([getDocs(q1), getDocs(q2)]);
+          const batch = writeBatch(db);
+          
+          for (const snap of snaps) {
+            for (const d of snap.docs) {
+              batch.delete(d.ref);
+              const candsRef = collection(db, "voiceChannels", currentChannel, "calls", d.id, "candidates");
+              const cSnap = await getDocs(candsRef);
+              cSnap.docs.forEach(cd => batch.delete(cd.ref));
+            }
+          }
+          await batch.commit();
+        } catch (e) { console.warn("Firestore call cleanup hatası", e); }
+      }
+    } catch (e) {
+      console.warn("Firestore cleanup genel hatası", e);
+    } finally {
+      processedIceCandidatesRef.current.clear();
+      setIsSpeaking(false);
+      setIsScreenSharing(false);
+      setIsCameraOn(false);
+      setHasRemoteVideo(false);
+      isCleaningUpRef.current = false;
+      console.log("🔓 cleanup kilidi açıldı - tam cleanup bitti");
     }
-    
-    processedIceCandidatesRef.current.clear();
-    setIsSpeaking(false);
-    setIsScreenSharing(false);
-    setIsCameraOn(false);
-    setHasRemoteVideo(false);
-
-    isCleaningUpRef.current = false;
-    console.log("🔓 cleanup kilidi açıldı - tam cleanup bitti");
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
+    setActiveView({ type: 'voice', id: channel });
+    if (joinedVoiceChannel === channel) return;
+    
     while (isCleaningUpRef.current) {
       await new Promise(r => setTimeout(r, 50));
     }
     
-    await handleLeaveVoiceChannel();
+    if (joinedVoiceChannel && joinedVoiceChannel !== channel) {
+      await handleLeaveVoiceChannel();
+    }
     
     while (isCleaningUpRef.current) {
       await new Promise(r => setTimeout(r, 50));
     }
 
-    setActiveView({ type: 'voice', id: channel });
-    if (joinedVoiceChannel === channel) return;
-    
     try {
       connectionSessionRef.current += 1;
       const currentSession = connectionSessionRef.current;
-      console.log(`🎤 [Session:${currentSession}] ${channel} kanalına katılınıyor...`);
+      console.log(`yeni bağlantı session başladı: ${currentSession}`);
       
       const stream = await getLocalAudioStream(audioSettings);
+      
       if (currentSession !== connectionSessionRef.current) {
-        console.log("🛑 Session iptal edildi, mikrofon durduruluyor");
+        console.log("eski session iptal edildi");
         stream?.getTracks().forEach(t => t.stop());
         return;
       }
@@ -533,7 +551,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       setIsMuted(false);
       setIsDeafened(false);
       playSoundEffect('join');
-      console.log(`✅ [Session:${currentSession}] Bağlantı hazır`);
     } catch (error) { 
       console.error("❌ Kanala katılma hatası:", error);
       toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." }); 
