@@ -13,7 +13,7 @@ export interface AudioSettings {
 
 /**
  * Ham ses akışını Web Audio API ile işleyerek gürültü azaltma ve filtreleme uygular.
- * Bu, Discord benzeri bir ses kalitesi elde etmek için yazılımsal bir işleme zinciri kurar.
+ * Discord benzeri agresif gürültü engelleme için RMS analizi ve spike rejection içerir.
  */
 export const processAudioStream = (stream: MediaStream, settings: AudioSettings): MediaStream => {
   try {
@@ -30,13 +30,13 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     highPass.type = 'highpass';
     highPass.frequency.setValueAtTime(150, audioContext.currentTime);
 
-    // 2. Peaking Filter: Netlik için konuşma frekanslarını (3kHz civarı) hafifçe parlatır.
+    // 2. Peaking Filter: Netlik için konuşma frekanslarını (3kHz civarı) parlatır.
     const clarityFilter = audioContext.createBiquadFilter();
     clarityFilter.type = 'peaking';
     clarityFilter.frequency.setValueAtTime(3000, audioContext.currentTime);
     clarityFilter.gain.setValueAtTime(3, audioContext.currentTime);
 
-    // 3. Dynamics Compressor: Ses seviyesini dengeler, ani yükselmeleri önler ve kısık sesleri duyulur yapar.
+    // 3. Dynamics Compressor: Ses seviyesini dengeler, ani yükselmeleri önler.
     const compressor = audioContext.createDynamicsCompressor();
     compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
     compressor.knee.setValueAtTime(30, audioContext.currentTime);
@@ -44,49 +44,70 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     compressor.attack.setValueAtTime(0.003, audioContext.currentTime);
     compressor.release.setValueAtTime(0.25, audioContext.currentTime);
 
-    // 4. Noise Gate (Gürültü Kapısı): Sessizlikte sesi tamamen keser.
+    // 4. Noise Gate (Gürültü Kapısı): Agresif Gate Mantığı
     const gateGain = audioContext.createGain();
     const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
+    analyser.fftSize = 512;
     
-    // İşleme zinciri: Source -> Analyser (Ölçüm için) -> HighPass -> Clarity -> Compressor -> GateGain -> Destination
-    source.connect(analyser);
+    // İşleme zinciri: Source -> HighPass -> Clarity -> Compressor -> Analyser -> GateGain -> Destination
     source.connect(highPass);
     highPass.connect(clarityFilter);
     clarityFilter.connect(compressor);
+    compressor.connect(analyser);
     compressor.connect(gateGain);
     gateGain.connect(destination);
 
-    // Gate Mantığı (Hassasiyet kontrolü)
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    // Gate Mantığı (Hassasiyet ve Spike Rejection)
+    const dataArray = new Float32Array(analyser.fftSize);
     let isOpen = false;
+    let lastHighVolumeTime = 0;
+    let consecutiveHighVolumeFrames = 0;
     
-    // Kullanıcının ayarladığı hassasiyet (default 0.03, Discord'a yakındır)
-    const threshold = (settings.micSensitivity ?? 0.03) * 255;
+    // Kullanıcının ayarladığı hassasiyeti agresif bir aralığa map et (0.05 - 0.20)
+    const baseSensitivity = settings.micSensitivity ?? 0.03;
+    const threshold = 0.05 + (baseSensitivity * 0.15); // 0.05 ile 0.20 arası agresif eşik
 
     const updateGate = () => {
-      analyser.getByteFrequencyData(dataArray);
-      const sum = dataArray.reduce((a, b) => a + b, 0);
-      const average = sum / dataArray.length;
+      analyser.getFloatTimeDomainData(dataArray);
+      
+      // RMS (Root Mean Square) hesaplama - Gerçek ses şiddeti ölçümü
+      let sumSquares = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sumSquares += dataArray[i] * dataArray[i];
+      }
+      const rms = Math.sqrt(sumSquares / dataArray.length);
 
-      if (average > threshold) {
-        if (!isOpen) {
-          // Attack: Sesi çok hızlı ve yumuşakça aç (10ms)
-          gateGain.gain.setTargetAtTime(1, audioContext.currentTime, 0.01);
-          isOpen = true;
+      const now = audioContext.currentTime;
+
+      if (rms > threshold) {
+        consecutiveHighVolumeFrames++;
+        
+        // Spike Rejection: Eğer ses çok kısaysa (klavye tıkırtısı gibi) gate'i hemen açma.
+        // En az 2 ardışık frame (yaklaşık 20-30ms) yüksek ses görmeliyiz.
+        if (consecutiveHighVolumeFrames >= 2) {
+          if (!isOpen) {
+            // Attack: Sesi çok hızlı aç (5ms)
+            gateGain.gain.setTargetAtTime(1, now, 0.005);
+            isOpen = true;
+          }
+          lastHighVolumeTime = now;
         }
       } else {
-        if (isOpen) {
-          // Release: Sesi yumuşakça kapat (200ms), kelime sonları kesilmesin.
-          gateGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.2);
+        consecutiveHighVolumeFrames = 0;
+        
+        // Release: Ses eşik altına düştüğünde hemen kesme (Konuşma sonlarını koru)
+        // 0.3s (300ms) bekleme süresi
+        if (isOpen && (now - lastHighVolumeTime) > 0.3) {
+          // Sesi yumuşakça kapat
+          gateGain.gain.setTargetAtTime(0, now, 0.1);
           isOpen = false;
         }
       }
     };
 
-    const gateInterval = setInterval(updateGate, 30);
+    const gateInterval = setInterval(updateGate, 20);
 
-    // Temizlik: Track durduğunda kaynakları temizle
+    // Temizlik
     stream.getTracks().forEach(track => {
       track.addEventListener('ended', () => {
         clearInterval(gateInterval);
@@ -98,7 +119,7 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
 
     return destination.stream;
   } catch (error) {
-    console.error("Ses işleme zinciri kurulamadı, ham ses kullanılıyor:", error);
+    console.error("Gelişmiş ses işleme hatası:", error);
     return stream;
   }
 };
@@ -114,7 +135,6 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
       channelCount: 1,
       latency: 0,
       
-      // Google/Chrome spesifik iyileştirmeler
       googEchoCancellation: true,
       googAutoGainControl: true,
       googNoiseSuppression: true,
