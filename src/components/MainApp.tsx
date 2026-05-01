@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -59,7 +58,10 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
-    micSensitivity: 0.02,
+    micSensitivity: 0.03,
+    gateLevel: 0.5,
+    gateSmoothing: 0.5,
+    micGain: 1.0,
     deviceId: "default",
     outputDeviceId: "default",
   });
@@ -165,7 +167,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   // --- Sesli Sohbet Mantığı ---
   useEffect(() => {
-    const savedAudio = localStorage.getItem("kanka_voice_audio_settings");
+    const savedAudio = localStorage.getItem("kanka_audio_settings");
     if (savedAudio) {
       try {
         setAudioSettings(prev => ({ ...prev, ...JSON.parse(savedAudio) }));
@@ -249,7 +251,10 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         if (!analyser) return;
         analyser.getByteFrequencyData(dataArray);
         const sum = dataArray.reduce((total, value) => total + value, 0);
-        const threshold = (audioSettings.micSensitivity ?? 0.02) * 255;
+        // Analiz threshold hesabı webrtc.ts ile uyumlu
+        const sensitivity = audioSettings.micSensitivity ?? 0.03;
+        const gateAggressiveness = audioSettings.gateLevel ?? 1.0;
+        const threshold = (0.02 + (sensitivity * 0.15 * gateAggressiveness)) * 255;
         setIsSpeaking((sum / dataArray.length) > threshold);
         animationId = requestAnimationFrame(checkVolume);
       };
@@ -259,7 +264,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext) audioContext.close();
     };
-  }, [joinedVoiceChannel, isMuted, audioSettings.micSensitivity]);
+  }, [joinedVoiceChannel, isMuted, audioSettings]);
 
   const localPresenceRef = useMemoFirebase(() => {
     if (!db || !joinedVoiceChannel || !userId) return null;

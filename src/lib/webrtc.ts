@@ -8,12 +8,15 @@ export interface AudioSettings {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
-  micSensitivity?: number; // 0.0 - 1.0 arası hassasiyet eşiği
+  micSensitivity: number; // 0.0 - 1.0 (Hassasiyet eşiği)
+  gateLevel: number;      // 0.0 - 1.0 (Gürültü kapısı agresifliği)
+  gateSmoothing: number;  // 0.0 - 1.0 (Kapanış hızı/yumuşatma)
+  micGain: number;       // 1.0 - 4.0 (Yazılımsal kazanç)
 }
 
 /**
- * Ham ses akışını Web Audio API ile işleyerek gürültü azaltma ve filtreleme uygular.
- * Discord benzeri agresif gürültü engelleme için RMS analizi ve spike rejection içerir.
+ * Ham ses akışını Web Audio API ile işleyerek gelişmiş gürültü engelleme, 
+ * kazanç ve ayarlanabilir gürültü kapısı uygular.
  */
 export const processAudioStream = (stream: MediaStream, settings: AudioSettings): MediaStream => {
   try {
@@ -25,18 +28,16 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     const source = audioContext.createMediaStreamSource(stream);
     const destination = audioContext.createMediaStreamDestination();
 
-    // 1. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları (fan, klima vb.) temizler.
+    // 1. Pre-Gain Node: Sesi gate'e girmeden önce yükseltir (zayıf mikrofonlar için)
+    const gainNode = audioContext.createGain();
+    gainNode.gain.setValueAtTime(settings.micGain ?? 1.0, audioContext.currentTime);
+
+    // 2. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları temizler.
     const highPass = audioContext.createBiquadFilter();
     highPass.type = 'highpass';
     highPass.frequency.setValueAtTime(150, audioContext.currentTime);
 
-    // 2. Peaking Filter: Netlik için konuşma frekanslarını (3kHz civarı) parlatır.
-    const clarityFilter = audioContext.createBiquadFilter();
-    clarityFilter.type = 'peaking';
-    clarityFilter.frequency.setValueAtTime(3000, audioContext.currentTime);
-    clarityFilter.gain.setValueAtTime(3, audioContext.currentTime);
-
-    // 3. Dynamics Compressor: Ses seviyesini dengeler, ani yükselmeleri önler.
+    // 3. Dynamics Compressor: Ses seviyesini dengeler.
     const compressor = audioContext.createDynamicsCompressor();
     compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
     compressor.knee.setValueAtTime(30, audioContext.currentTime);
@@ -44,33 +45,35 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     compressor.attack.setValueAtTime(0.003, audioContext.currentTime);
     compressor.release.setValueAtTime(0.25, audioContext.currentTime);
 
-    // 4. Noise Gate (Gürültü Kapısı): Agresif Gate Mantığı
+    // 4. Noise Gate (Gürültü Kapısı) Kontrol Ünitesi
     const gateGain = audioContext.createGain();
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 512;
     
-    // İşleme zinciri: Source -> HighPass -> Clarity -> Compressor -> Analyser -> GateGain -> Destination
-    source.connect(highPass);
-    highPass.connect(clarityFilter);
-    clarityFilter.connect(compressor);
+    // İşleme zinciri: Source -> Gain -> HighPass -> Compressor -> Analyser -> GateGain -> Destination
+    source.connect(gainNode);
+    gainNode.connect(highPass);
+    highPass.connect(compressor);
     compressor.connect(analyser);
     compressor.connect(gateGain);
     gateGain.connect(destination);
 
-    // Gate Mantığı (Hassasiyet ve Spike Rejection)
     const dataArray = new Float32Array(analyser.fftSize);
     let isOpen = false;
     let lastHighVolumeTime = 0;
     let consecutiveHighVolumeFrames = 0;
     
-    // Kullanıcının ayarladığı hassasiyeti agresif bir aralığa map et (0.05 - 0.20)
-    const baseSensitivity = settings.micSensitivity ?? 0.03;
-    const threshold = 0.05 + (baseSensitivity * 0.15); // 0.05 ile 0.20 arası agresif eşik
+    // Eşik hesaplama: Kullanıcı hassasiyeti ve gate seviyesi birleşimi
+    // gateLevel (0.0 - 1.0) -> Eşik değerini 0.02 ile 0.30 arasında scale eder.
+    const threshold = 0.02 + (settings.micSensitivity * 0.15 * (settings.gateLevel ?? 1.0));
+
+    // Yumuşatma (Smoothing): gateSmoothing -> 0.1s ile 0.8s arası release
+    const releaseTime = 0.1 + ((settings.gateSmoothing ?? 0.5) * 0.7);
 
     const updateGate = () => {
+      if (!analyser) return;
       analyser.getFloatTimeDomainData(dataArray);
       
-      // RMS (Root Mean Square) hesaplama - Gerçek ses şiddeti ölçümü
       let sumSquares = 0;
       for (let i = 0; i < dataArray.length; i++) {
         sumSquares += dataArray[i] * dataArray[i];
@@ -81,25 +84,17 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
 
       if (rms > threshold) {
         consecutiveHighVolumeFrames++;
-        
-        // Spike Rejection: Eğer ses çok kısaysa (klavye tıkırtısı gibi) gate'i hemen açma.
-        // En az 2 ardışık frame (yaklaşık 20-30ms) yüksek ses görmeliyiz.
-        if (consecutiveHighVolumeFrames >= 2) {
+        if (consecutiveHighVolumeFrames >= 2) { // 2 frame spike rejection
           if (!isOpen) {
-            // Attack: Sesi çok hızlı aç (5ms)
-            gateGain.gain.setTargetAtTime(1, now, 0.005);
+            gateGain.gain.setTargetAtTime(1, now, 0.005); // Attack (5ms)
             isOpen = true;
           }
           lastHighVolumeTime = now;
         }
       } else {
         consecutiveHighVolumeFrames = 0;
-        
-        // Release: Ses eşik altına düştüğünde hemen kesme (Konuşma sonlarını koru)
-        // 0.3s (300ms) bekleme süresi
-        if (isOpen && (now - lastHighVolumeTime) > 0.3) {
-          // Sesi yumuşakça kapat
-          gateGain.gain.setTargetAtTime(0, now, 0.1);
+        if (isOpen && (now - lastHighVolumeTime) > releaseTime) {
+          gateGain.gain.setTargetAtTime(0, now, 0.05); // Yumuşak kapanış
           isOpen = false;
         }
       }
@@ -107,7 +102,6 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
 
     const gateInterval = setInterval(updateGate, 20);
 
-    // Temizlik
     stream.getTracks().forEach(track => {
       track.addEventListener('ended', () => {
         clearInterval(gateInterval);

@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
+import { Button } from "@/components/ui/button";
+import { RotateCcw } from "lucide-react";
 import { AudioSettings } from "@/lib/webrtc";
 
 interface AudioSettingsDialogProps {
@@ -25,6 +27,18 @@ interface AudioSettingsDialogProps {
   settings: AudioSettings & { outputDeviceId?: string };
   onSettingsChange: (settings: AudioSettings & { outputDeviceId?: string }) => void;
 }
+
+const DEFAULT_SETTINGS: AudioSettings & { outputDeviceId?: string } = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  micSensitivity: 0.03,
+  gateLevel: 0.5,
+  gateSmoothing: 0.5,
+  micGain: 1.0,
+  deviceId: "default",
+  outputDeviceId: "default",
+};
 
 export function AudioSettingsDialog({
   isOpen,
@@ -59,12 +73,22 @@ export function AudioSettingsDialog({
     localStorage.setItem("kanka_audio_settings", JSON.stringify(newSettings));
   };
 
+  const handleReset = () => {
+    onSettingsChange(DEFAULT_SETTINGS);
+    localStorage.setItem("kanka_audio_settings", JSON.stringify(DEFAULT_SETTINGS));
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px] bg-card border-border">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[425px] bg-card border-border max-h-[90vh] overflow-y-auto">
+        <DialogHeader className="flex flex-row items-center justify-between">
           <DialogTitle className="text-xl font-bold">Ses Ayarları</DialogTitle>
+          <Button variant="ghost" size="sm" onClick={handleReset} className="h-8 gap-2 text-xs text-muted-foreground hover:text-foreground">
+            <RotateCcw className="w-3 h-3" />
+            Sıfırla
+          </Button>
         </DialogHeader>
+        
         <div className="space-y-6 py-4">
           {/* Cihaz Seçimi */}
           <div className="space-y-4">
@@ -107,32 +131,68 @@ export function AudioSettingsDialog({
             </div>
           </div>
 
-          <div className="h-px bg-border my-2" />
+          <div className="h-px bg-border" />
 
-          {/* Noise Gate Hassasiyeti */}
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <Label className="text-sm font-semibold">Mikrofon Hassasiyeti (Noise Gate)</Label>
-              <span className="text-xs text-muted-foreground">%{Math.round((settings.micSensitivity ?? 0.03) * 100)}</span>
+          {/* Gelişmiş Filtreler */}
+          <div className="space-y-5">
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs font-bold uppercase text-muted-foreground">Mikrofon Hassasiyeti</Label>
+                <span className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">%{Math.round(settings.micSensitivity * 100)}</span>
+              </div>
+              <Slider
+                value={[settings.micSensitivity * 100]}
+                max={100}
+                onValueChange={(val) => updateSetting("micSensitivity", val[0] / 100)}
+              />
             </div>
-            <p className="text-[11px] text-muted-foreground">Konuşmadığınızda sesin tamamen kesilmesi için gereken eşik seviyesi.</p>
-            <Slider
-              value={[(settings.micSensitivity ?? 0.03) * 100]}
-              max={100}
-              step={1}
-              onValueChange={(val) => updateSetting("micSensitivity", val[0] / 100)}
-              className="py-2"
-            />
+
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs font-bold uppercase text-muted-foreground">Gürültü Kapısı Seviyesi</Label>
+                <span className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">%{Math.round((settings.gateLevel ?? 0.5) * 100)}</span>
+              </div>
+              <Slider
+                value={[(settings.gateLevel ?? 0.5) * 100]}
+                max={100}
+                onValueChange={(val) => updateSetting("gateLevel", val[0] / 100)}
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs font-bold uppercase text-muted-foreground">Gate Yumuşatma</Label>
+                <span className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">%{Math.round((settings.gateSmoothing ?? 0.5) * 100)}</span>
+              </div>
+              <Slider
+                value={[(settings.gateSmoothing ?? 0.5) * 100]}
+                max={100}
+                onValueChange={(val) => updateSetting("gateSmoothing", val[0] / 100)}
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs font-bold uppercase text-muted-foreground">Mikrofon Kazancı (Boost)</Label>
+                <span className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">{Math.round((settings.micGain ?? 1.0) * 10) / 10}x</span>
+              </div>
+              <Slider
+                value={[(settings.micGain ?? 1.0) * 25]} // 1.0 - 4.0 scale
+                min={25}
+                max={100}
+                onValueChange={(val) => updateSetting("micGain", val[0] / 25)}
+              />
+            </div>
           </div>
 
-          <div className="h-px bg-border my-2" />
+          <div className="h-px bg-border" />
 
-          {/* Ses İşleme Ayarları */}
+          {/* Ses İşleme Donanımsal Ayarları */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <Label className="text-sm font-semibold">Yankı Önleme</Label>
-                <p className="text-xs text-muted-foreground">Hoparlörden gelen sesi engeller.</p>
+                <p className="text-[11px] text-muted-foreground">Geri bildirimi engeller.</p>
               </div>
               <Switch
                 checked={settings.echoCancellation}
@@ -142,8 +202,8 @@ export function AudioSettingsDialog({
 
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-semibold">Gürültü Azaltma (Donanımsal)</Label>
-                <p className="text-xs text-muted-foreground">Arka plan seslerini temizler.</p>
+                <Label className="text-sm font-semibold">Donanımsal Gürültü Azaltma</Label>
+                <p className="text-[11px] text-muted-foreground">Arka plan seslerini temizler.</p>
               </div>
               <Switch
                 checked={settings.noiseSuppression}
@@ -154,7 +214,7 @@ export function AudioSettingsDialog({
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <Label className="text-sm font-semibold">Otomatik Kazanç (AGC)</Label>
-                <p className="text-xs text-muted-foreground">Ses seviyenizi dengeler.</p>
+                <p className="text-[11px] text-muted-foreground">Seviyenizi otomatik dengeler.</p>
               </div>
               <Switch
                 checked={settings.autoGainControl}
