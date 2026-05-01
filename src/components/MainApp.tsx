@@ -64,6 +64,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     micGain: 1.0,
     deviceId: "default",
     outputDeviceId: "default",
+    qualityMode: "balanced"
   });
 
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -254,7 +255,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         // Analiz threshold hesabı webrtc.ts ile uyumlu
         const sensitivity = audioSettings.micSensitivity ?? 0.03;
         const gateAggressiveness = audioSettings.gateLevel ?? 1.0;
-        const threshold = (0.02 + (sensitivity * 0.15 * gateAggressiveness)) * 255;
+        const threshold = (0.01 + (sensitivity * 0.2 * gateAggressiveness)) * 255;
         setIsSpeaking((sum / dataArray.length) > threshold);
         animationId = requestAnimationFrame(checkVolume);
       };

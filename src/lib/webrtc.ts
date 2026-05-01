@@ -3,6 +3,8 @@
  * Bu dosya temel bağlantı ve medya yönetimi işlemlerini içerir.
  */
 
+export type AudioQualityMode = 'low-latency' | 'balanced' | 'high-quality';
+
 export interface AudioSettings {
   deviceId?: string;
   echoCancellation: boolean;
@@ -12,6 +14,7 @@ export interface AudioSettings {
   gateLevel: number;      // 0.0 - 1.0 (Gürültü kapısı agresifliği)
   gateSmoothing: number;  // 0.0 - 1.0 (Kapanış hızı/yumuşatma)
   micGain: number;       // 1.0 - 4.0 (Yazılımsal kazanç)
+  qualityMode?: AudioQualityMode;
 }
 
 /**
@@ -21,39 +24,56 @@ export interface AudioSettings {
 export const processAudioStream = (stream: MediaStream, settings: AudioSettings): MediaStream => {
   try {
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-      latencyHint: 'interactive',
+      latencyHint: settings.qualityMode === 'low-latency' ? 'interactive' : 'playback',
       sampleRate: 48000,
     });
 
     const source = audioContext.createMediaStreamSource(stream);
     const destination = audioContext.createMediaStreamDestination();
 
-    // 1. Pre-Gain Node: Sesi gate'e girmeden önce yükseltir (zayıf mikrofonlar için)
+    // 1. Pre-Gain Node
     const gainNode = audioContext.createGain();
     gainNode.gain.setValueAtTime(settings.micGain ?? 1.0, audioContext.currentTime);
 
-    // 2. High-pass Filter: 150Hz altındaki düşük frekanslı uğultuları temizler.
+    // 2. High-pass Filter: Düşük frekanslı gürültüleri (fan, motor) temizler.
     const highPass = audioContext.createBiquadFilter();
     highPass.type = 'highpass';
-    highPass.frequency.setValueAtTime(150, audioContext.currentTime);
+    highPass.frequency.setValueAtTime(settings.qualityMode === 'high-quality' ? 120 : 150, audioContext.currentTime);
+    highPass.Q.setValueAtTime(0.7, audioContext.currentTime);
 
-    // 3. Dynamics Compressor: Ses seviyesini dengeler.
+    // 3. Peaking Filter (Voice Clarity): İnsan sesi frekanslarını hafifçe öne çıkarır (High Quality modunda).
+    const clarityFilter = audioContext.createBiquadFilter();
+    clarityFilter.type = 'peaking';
+    clarityFilter.frequency.setValueAtTime(3000, audioContext.currentTime);
+    clarityFilter.gain.setValueAtTime(settings.qualityMode === 'high-quality' ? 3 : 0, audioContext.currentTime);
+    clarityFilter.Q.setValueAtTime(1.0, audioContext.currentTime);
+
+    // 4. Dynamics Compressor: Ses seviyesini dengeler, patlamaları önler.
     const compressor = audioContext.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
-    compressor.knee.setValueAtTime(30, audioContext.currentTime);
-    compressor.ratio.setValueAtTime(12, audioContext.currentTime);
-    compressor.attack.setValueAtTime(0.003, audioContext.currentTime);
-    compressor.release.setValueAtTime(0.25, audioContext.currentTime);
+    if (settings.qualityMode === 'high-quality') {
+      compressor.threshold.setValueAtTime(-20, audioContext.currentTime);
+      compressor.knee.setValueAtTime(20, audioContext.currentTime);
+      compressor.ratio.setValueAtTime(8, audioContext.currentTime);
+      compressor.attack.setValueAtTime(0.002, audioContext.currentTime);
+      compressor.release.setValueAtTime(0.2, audioContext.currentTime);
+    } else {
+      compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
+      compressor.knee.setValueAtTime(30, audioContext.currentTime);
+      compressor.ratio.setValueAtTime(12, audioContext.currentTime);
+      compressor.attack.setValueAtTime(0.003, audioContext.currentTime);
+      compressor.release.setValueAtTime(0.25, audioContext.currentTime);
+    }
 
-    // 4. Noise Gate (Gürültü Kapısı) Kontrol Ünitesi
+    // 5. Noise Gate Kontrol Ünitesi
     const gateGain = audioContext.createGain();
     const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 512;
+    analyser.fftSize = settings.qualityMode === 'low-latency' ? 256 : 512;
     
-    // İşleme zinciri: Source -> Gain -> HighPass -> Compressor -> Analyser -> GateGain -> Destination
+    // İşleme zinciri: Source -> Gain -> HighPass -> Clarity -> Compressor -> Analyser -> GateGain -> Destination
     source.connect(gainNode);
     gainNode.connect(highPass);
-    highPass.connect(compressor);
+    highPass.connect(clarityFilter);
+    clarityFilter.connect(compressor);
     compressor.connect(analyser);
     compressor.connect(gateGain);
     gateGain.connect(destination);
@@ -63,12 +83,8 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     let lastHighVolumeTime = 0;
     let consecutiveHighVolumeFrames = 0;
     
-    // Eşik hesaplama: Kullanıcı hassasiyeti ve gate seviyesi birleşimi
-    // gateLevel (0.0 - 1.0) -> Eşik değerini 0.02 ile 0.30 arasında scale eder.
-    const threshold = 0.02 + (settings.micSensitivity * 0.15 * (settings.gateLevel ?? 1.0));
-
-    // Yumuşatma (Smoothing): gateSmoothing -> 0.1s ile 0.8s arası release
-    const releaseTime = 0.1 + ((settings.gateSmoothing ?? 0.5) * 0.7);
+    const threshold = 0.01 + (settings.micSensitivity * 0.2 * (settings.gateLevel ?? 1.0));
+    const releaseTime = 0.1 + ((settings.gateSmoothing ?? 0.5) * 0.9);
 
     const updateGate = () => {
       if (!analyser) return;
@@ -84,9 +100,9 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
 
       if (rms > threshold) {
         consecutiveHighVolumeFrames++;
-        if (consecutiveHighVolumeFrames >= 2) { // 2 frame spike rejection
+        if (consecutiveHighVolumeFrames >= 2) { 
           if (!isOpen) {
-            gateGain.gain.setTargetAtTime(1, now, 0.005); // Attack (5ms)
+            gateGain.gain.setTargetAtTime(1, now, 0.003); // Hızlı attack
             isOpen = true;
           }
           lastHighVolumeTime = now;
@@ -94,13 +110,14 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
       } else {
         consecutiveHighVolumeFrames = 0;
         if (isOpen && (now - lastHighVolumeTime) > releaseTime) {
-          gateGain.gain.setTargetAtTime(0, now, 0.05); // Yumuşak kapanış
+          gateGain.gain.setTargetAtTime(0, now, 0.05); // Yumuşak release
           isOpen = false;
         }
       }
     };
 
-    const gateInterval = setInterval(updateGate, 20);
+    const intervalRate = settings.qualityMode === 'low-latency' ? 10 : 20;
+    const gateInterval = setInterval(updateGate, intervalRate);
 
     stream.getTracks().forEach(track => {
       track.addEventListener('ended', () => {
@@ -129,11 +146,13 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
       channelCount: 1,
       latency: 0,
       
+      // Google/Chromium specific constraints
       googEchoCancellation: true,
       googAutoGainControl: true,
       googNoiseSuppression: true,
       googHighpassFilter: true,
       googTypingNoiseDetection: true,
+      googAudioMirroring: false,
     };
 
     const constraints: MediaStreamConstraints = {
@@ -156,13 +175,30 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
 
 export const createPeerConnection = (): RTCPeerConnection | null => {
   try {
-    return new RTCPeerConnection({
+    const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" }
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" }
       ],
       iceCandidatePoolSize: 10,
     });
+
+    // Ses paketleri için öncelik ayarı (bazı tarayıcılarda desteklenir)
+    pc.onnegotiationneeded = () => {
+      pc.getSenders().forEach(sender => {
+        if (sender.track?.kind === 'audio') {
+          const params = sender.getParameters();
+          if (params.encodings && params.encodings.length > 0) {
+            params.encodings[0].priority = 'high';
+            params.encodings[0].networkPriority = 'high';
+            sender.setParameters(params).catch(() => {});
+          }
+        }
+      });
+    };
+
+    return pc;
   } catch (error) {
     console.error("PeerConnection oluşturulurken hata oluştu:", error);
     return null;
@@ -183,7 +219,13 @@ export const addLocalTracks = (
         return;
       }
 
-      pc.addTrack(track, stream);
+      const sender = pc.addTrack(track, stream);
+      
+      // Opus ses kalitesini optimize et
+      const params = sender.getParameters();
+      if (!params.encodings) params.encodings = [{}];
+      params.encodings[0].maxBitrate = 128000; // 128kbps max
+      sender.setParameters(params).catch(() => {});
     });
   } catch (error) {
     console.error("Yerel track eklenirken hata oluştu:", error);
@@ -196,6 +238,7 @@ export const createOffer = async (
   try {
     const offer = await pc.createOffer({
       offerToReceiveAudio: true,
+      voiceActivityDetection: true,
     });
     await pc.setLocalDescription(offer);
     return offer;

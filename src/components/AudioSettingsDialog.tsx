@@ -18,8 +18,9 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
-import { RotateCcw } from "lucide-react";
-import { AudioSettings } from "@/lib/webrtc";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RotateCcw, Zap, Layers, Sparkles } from "lucide-react";
+import { AudioSettings, AudioQualityMode } from "@/lib/webrtc";
 
 interface AudioSettingsDialogProps {
   isOpen: boolean;
@@ -38,6 +39,7 @@ const DEFAULT_SETTINGS: AudioSettings & { outputDeviceId?: string } = {
   micGain: 1.0,
   deviceId: "default",
   outputDeviceId: "default",
+  qualityMode: "balanced"
 };
 
 export function AudioSettingsDialog({
@@ -90,6 +92,33 @@ export function AudioSettingsDialog({
         </DialogHeader>
         
         <div className="space-y-6 py-4">
+          {/* Kalite Modu */}
+          <div className="space-y-3">
+            <Label className="text-xs font-bold uppercase text-muted-foreground">Ses Kalite Modu</Label>
+            <Tabs 
+              value={settings.qualityMode || "balanced"} 
+              onValueChange={(val) => updateSetting("qualityMode", val as AudioQualityMode)}
+              className="w-full"
+            >
+              <TabsList className="grid w-full grid-cols-3 bg-muted/50 h-11">
+                <TabsTrigger value="low-latency" className="text-[10px] gap-1.5 flex-col py-1">
+                  <Zap className="w-3 h-3" />
+                  <span>Hızlı</span>
+                </TabsTrigger>
+                <TabsTrigger value="balanced" className="text-[10px] gap-1.5 flex-col py-1">
+                  <Layers className="w-3 h-3" />
+                  <span>Dengeli</span>
+                </TabsTrigger>
+                <TabsTrigger value="high-quality" className="text-[10px] gap-1.5 flex-col py-1">
+                  <Sparkles className="w-3 h-3" />
+                  <span>Yüksek</span>
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+
+          <div className="h-px bg-border" />
+
           {/* Cihaz Seçimi */}
           <div className="space-y-4">
             <div className="space-y-2">
