@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -76,6 +77,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const voiceRoomVideosRef = useRef<Record<string, HTMLVideoElement | null>>({});
   const processedIceCandidatesRef = useRef<Set<string>>(new Set());
   const isCleaningUpRef = useRef(false);
+  const connectionSessionRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { toast } = useToast();
@@ -169,7 +171,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   // --- Sesli Sohbet Mantığı ---
   useEffect(() => {
-    const savedAudio = localStorage.getItem("kanka_audio_settings");
+    const savedAudio = localStorage.getItem("kanka_voice_audio_settings");
     if (savedAudio) {
       try {
         setAudioSettings(prev => ({ ...prev, ...JSON.parse(savedAudio) }));
@@ -334,18 +336,22 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const candidatesQuery = useMemoFirebase(() => db && joinedVoiceChannel && callInfo ? collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates") : null, [db, joinedVoiceChannel, callInfo]);
   const { data: remoteCandidates } = useCollection(candidatesQuery);
 
-  const setupPeerConnection = useCallback(() => {
-    if (isCleaningUpRef.current || !joinedVoiceChannel) return null;
+  const setupPeerConnection = useCallback((sessionId: number) => {
+    if (isCleaningUpRef.current || !joinedVoiceChannel || sessionId !== connectionSessionRef.current) {
+      if (sessionId !== connectionSessionRef.current) console.log("⚠️ Eski session setup engellendi");
+      return null;
+    }
     const pc = createPeerConnection();
     if (!pc) return null;
     pc.onicecandidate = (event) => {
-      if (event.candidate && db && joinedVoiceChannel && callInfo && !isCleaningUpRef.current) {
+      if (event.candidate && db && joinedVoiceChannel && callInfo && !isCleaningUpRef.current && sessionId === connectionSessionRef.current) {
         console.log("ICE gönderildi");
         const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates");
         addDocumentNonBlocking(candsRef, { userId, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
       }
     };
     pc.ontrack = (event) => {
+      if (sessionId !== connectionSessionRef.current) return;
       const stream = event.streams[0];
       if (event.track.kind === 'audio') {
         if (!remoteAudioRef.current) {
@@ -384,35 +390,40 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, userVolumes]);
 
   useEffect(() => {
+    const sessionId = connectionSessionRef.current;
     const handleSignaling = async () => {
-      if (isCleaningUpRef.current || !joinedVoiceChannel || !callInfo || !callDocRef || !db || !localStreamRef.current) {
-        if (isCleaningUpRef.current) console.log("offer cleanup nedeniyle engellendi");
+      if (isCleaningUpRef.current || !joinedVoiceChannel || !callInfo || !callDocRef || !db || !localStreamRef.current || sessionId !== connectionSessionRef.current) {
+        if (sessionId !== connectionSessionRef.current) console.log("🛑 Eski session signaling engellendi");
         return;
       }
       
       if (callInfo.isOfferer) {
         if (!peerConnectionRef.current) {
-          const pc = setupPeerConnection();
+          const pc = setupPeerConnection(sessionId);
           if (!pc) return;
           peerConnectionRef.current = pc;
           const offer = await createOffer(pc);
-          if (offer) {
+          if (offer && sessionId === connectionSessionRef.current) {
             console.log("offer yazıldı");
             setDocumentNonBlocking(callDocRef, { ...callInfo, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
+          } else {
+            console.log("eski offer engellendi");
           }
         }
-        if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") {
+        if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer" && sessionId === connectionSessionRef.current) {
           console.log("answer alındı");
           await setRemoteDescription(peerConnectionRef.current, callData.answer);
         }
       } else if (callData?.offer && !peerConnectionRef.current) {
-        const pc = setupPeerConnection();
+        const pc = setupPeerConnection(sessionId);
         if (!pc) return;
         peerConnectionRef.current = pc;
         const answer = await createAnswer(pc, callData.offer);
-        if (answer) {
+        if (answer && sessionId === connectionSessionRef.current) {
           console.log("answer yazıldı");
           setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
+        } else {
+          console.log("eski answer engellendi");
         }
       }
     };
@@ -420,10 +431,11 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   }, [callInfo, callData, callDocRef, db, setupPeerConnection, userId, joinedVoiceChannel]);
 
   useEffect(() => {
-    if (isCleaningUpRef.current || !joinedVoiceChannel || !remoteCandidates || !peerConnectionRef.current) return;
+    const sessionId = connectionSessionRef.current;
+    if (isCleaningUpRef.current || !joinedVoiceChannel || !remoteCandidates || !peerConnectionRef.current || sessionId !== connectionSessionRef.current) return;
     if (peerConnectionRef.current.remoteDescription) {
       remoteCandidates.forEach(doc => {
-        if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id)) {
+        if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id) && sessionId === connectionSessionRef.current) {
           addIceCandidate(peerConnectionRef.current!, doc.candidate);
           processedIceCandidatesRef.current.add(doc.id);
         }
@@ -434,8 +446,9 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (isCleaningUpRef.current) return;
     
-    console.log("cleanup kilidi kapandı - tam cleanup başladı");
+    console.log("🧹 cleanup kilidi kapandı - tam cleanup başladı");
     isCleaningUpRef.current = true;
+    connectionSessionRef.current += 1; // Eski session'ı iptal et
     const currentChannel = joinedVoiceChannel;
     setJoinedVoiceChannel(null);
     playSoundEffect('leave');
@@ -484,7 +497,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     setHasRemoteVideo(false);
 
     isCleaningUpRef.current = false;
-    console.log("cleanup kilidi açıldı - tam cleanup bitti");
+    console.log("🔓 cleanup kilidi açıldı - tam cleanup bitti");
   }, [db, joinedVoiceChannel, userId, playSoundEffect]);
 
   const handleJoinVoiceChannel = useCallback(async (channel: string) => {
@@ -502,8 +515,17 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (joinedVoiceChannel === channel) return;
     
     try {
-      console.log(`🎤 ${channel} kanalına katılınıyor...`);
+      connectionSessionRef.current += 1;
+      const currentSession = connectionSessionRef.current;
+      console.log(`🎤 [Session:${currentSession}] ${channel} kanalına katılınıyor...`);
+      
       const stream = await getLocalAudioStream(audioSettings);
+      if (currentSession !== connectionSessionRef.current) {
+        console.log("🛑 Session iptal edildi, mikrofon durduruluyor");
+        stream?.getTracks().forEach(t => t.stop());
+        return;
+      }
+      
       if (!stream) throw new Error("Mikrofon alınamadı");
       
       localStreamRef.current = stream;
@@ -511,6 +533,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       setIsMuted(false);
       setIsDeafened(false);
       playSoundEffect('join');
+      console.log(`✅ [Session:${currentSession}] Bağlantı hazır`);
     } catch (error) { 
       console.error("❌ Kanala katılma hatası:", error);
       toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." }); 
@@ -518,25 +541,31 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, playSoundEffect, toast]);
 
   const handleToggleScreenShare = async () => {
+    const sessionId = connectionSessionRef.current;
     if (isCleaningUpRef.current || !joinedVoiceChannel || !peerConnectionRef.current) return;
     if (isScreenSharing) {
       screenStreamRef.current?.getTracks().forEach(t => t.stop());
       screenStreamRef.current = null;
       setIsScreenSharing(false);
-      // Trigger renegotiation
-      const offer = await createOffer(peerConnectionRef.current);
-      if (offer && callDocRef) {
-        setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+      if (sessionId === connectionSessionRef.current) {
+        const offer = await createOffer(peerConnectionRef.current);
+        if (offer && callDocRef && sessionId === connectionSessionRef.current) {
+          setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+        }
       }
     } else {
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        if (sessionId !== connectionSessionRef.current) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
         screenStreamRef.current = stream;
         stream.getTracks().forEach(t => peerConnectionRef.current?.addTrack(t, stream));
         setIsScreenSharing(true);
         stream.getVideoTracks()[0].onended = () => handleToggleScreenShare();
         const offer = await createOffer(peerConnectionRef.current);
-        if (offer && callDocRef) {
+        if (offer && callDocRef && sessionId === connectionSessionRef.current) {
           setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
         }
       } catch (err) { console.error(err); }
@@ -544,23 +573,30 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   };
 
   const handleToggleCamera = async () => {
+    const sessionId = connectionSessionRef.current;
     if (isCleaningUpRef.current || !joinedVoiceChannel || !peerConnectionRef.current) return;
     if (isCameraOn) {
       cameraStreamRef.current?.getTracks().forEach(t => t.stop());
       cameraStreamRef.current = null;
       setIsCameraOn(false);
-      const offer = await createOffer(peerConnectionRef.current);
-      if (offer && callDocRef) {
-        setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+      if (sessionId === connectionSessionRef.current) {
+        const offer = await createOffer(peerConnectionRef.current);
+        if (offer && callDocRef && sessionId === connectionSessionRef.current) {
+          setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
+        }
       }
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        if (sessionId !== connectionSessionRef.current) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
         cameraStreamRef.current = stream;
         stream.getTracks().forEach(t => peerConnectionRef.current?.addTrack(t, stream));
         setIsCameraOn(true);
         const offer = await createOffer(peerConnectionRef.current);
-        if (offer && callDocRef) {
+        if (offer && callDocRef && sessionId === connectionSessionRef.current) {
           setDocumentNonBlocking(callDocRef, { offer: { type: offer.type, sdp: offer.sdp } }, { merge: true });
         }
       } catch (err) {
