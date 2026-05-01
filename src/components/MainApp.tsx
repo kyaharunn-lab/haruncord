@@ -91,12 +91,12 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   // Varsayılan kanalları oluştur
   useEffect(() => {
-    if (db && roomsData?.length === 0) {
+    if (db && roomsData && roomsData.length === 0) {
       ["Genel", "Oyun", "Muhabbet"].forEach(id => {
         setDoc(doc(db, "textChannels", id), { createdAt: serverTimestamp() });
       });
     }
-    if (db && voiceChannelsData?.length === 0) {
+    if (db && voiceChannelsData && voiceChannelsData.length === 0) {
       ["Genel Ses", "Oyun Ses", "Muhabbet Ses"].forEach(id => {
         setDoc(doc(db, "voiceChannels", id), { name: id, createdAt: serverTimestamp() });
       });
@@ -191,6 +191,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const handleSettingsChange = useCallback(async (newSettings: AudioSettings & { outputDeviceId?: string }) => {
     setAudioSettings(newSettings);
     if (joinedVoiceChannel && localStreamRef.current) {
+      console.log("⚙️ Ses ayarları güncelleniyor...");
       const oldTracks = localStreamRef.current.getTracks();
       const newStream = await getLocalAudioStream(newSettings);
       if (newStream) {
@@ -201,7 +202,9 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           const senders = peerConnectionRef.current.getSenders();
           const audioSender = senders.find(s => s.track?.kind === 'audio');
           const newTrack = newStream.getAudioTracks()[0];
-          if (audioSender && newTrack) audioSender.replaceTrack(newTrack);
+          if (audioSender && newTrack) {
+            audioSender.replaceTrack(newTrack).then(() => console.log("🔄 Audio track başarıyla değiştirildi"));
+          }
         }
       }
     }
@@ -252,7 +255,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         if (!analyser) return;
         analyser.getByteFrequencyData(dataArray);
         const sum = dataArray.reduce((total, value) => total + value, 0);
-        // Analiz threshold hesabı webrtc.ts ile uyumlu
         const sensitivity = audioSettings.micSensitivity ?? 0.03;
         const gateAggressiveness = audioSettings.gateLevel ?? 1.0;
         const threshold = (0.01 + (sensitivity * 0.2 * gateAggressiveness)) * 255;
@@ -312,7 +314,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     return rawChannelUsers.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
   }, [rawChannelUsers]);
 
-  const viewPresenceQuery = useMemoFirebase(() => db && activeView.type === 'voice' ? collection(db, "voiceChannels", activeView.id, "presence") : null, [db, activeView]);
+  const viewPresenceQuery = useMemoFirebase(() => db && activeView.id && activeView.type === 'voice' ? collection(db, "voiceChannels", activeView.id, "presence") : null, [db, activeView]);
   const { data: rawViewUsers } = useCollection(viewPresenceQuery);
   const viewUsers = useMemo(() => {
     if (!rawViewUsers) return [];
@@ -339,14 +341,17 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (!pc) return null;
     pc.onicecandidate = (event) => {
       if (event.candidate && db && joinedVoiceChannel && callInfo) {
+        console.log("❄️ Local ICE candidate bulundu, gönderiliyor...");
         const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates");
         addDocumentNonBlocking(candsRef, { userId, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
       }
     };
     pc.ontrack = (event) => {
       const stream = event.streams[0];
+      console.log(`📡 Remote track alındı: ${event.track.kind}`);
       if (event.track.kind === 'audio') {
         if (!remoteAudioRef.current) {
+          console.log("🔈 Remote audio elementi oluşturuluyor");
           const audio = document.createElement("audio");
           audio.autoplay = true;
           audio.playsInline = true;
@@ -357,9 +362,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         remoteAudioRef.current.muted = isDeafened;
         const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
         if (targetId) remoteAudioRef.current.volume = (userVolumes[targetId] ?? 100) / 100;
-        remoteAudioRef.current.play().catch(() => {});
+        remoteAudioRef.current.play().then(() => console.log("🔊 Remote audio çalmaya başladı")).catch(e => console.error("❌ Audio play hatası:", e));
       } else if (event.track.kind === 'video') {
-        // Ekran paylaşımı veya kamera
         const isScreen = stream.getVideoTracks()[0]?.label.toLowerCase().includes('screen');
         if (isScreen) {
           if (remoteVideoRef.current) {
@@ -368,7 +372,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
             setHasRemoteVideo(true);
           }
         } else {
-          // Kamera stream'i oda kartlarına yönlendirilir
           const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
           if (targetId && voiceRoomVideosRef.current[targetId]) {
             voiceRoomVideosRef.current[targetId]!.srcObject = stream;
@@ -376,6 +379,10 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           }
         }
       }
+    };
+    pc.onconnectionstatechange = () => {
+      console.log(`🔌 Bağlantı durumu değişti: ${pc.connectionState}`);
+      if (pc.connectionState === 'connected') console.log("✅ Peer Connected!");
     };
     if (localStreamRef.current) addLocalTracks(pc, localStreamRef.current);
     if (screenStreamRef.current) {
@@ -396,15 +403,25 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           if (!pc) return;
           peerConnectionRef.current = pc;
           const offer = await createOffer(pc);
-          if (offer) setDocumentNonBlocking(callDocRef, { ...callInfo, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
+          if (offer) {
+            console.log("📝 Offer yazıldı");
+            setDocumentNonBlocking(callDocRef, { ...callInfo, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
+          }
         }
-        if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") await setRemoteDescription(peerConnectionRef.current, callData.answer);
+        if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer") {
+          console.log("📥 Answer alındı ve uygulanıyor");
+          await setRemoteDescription(peerConnectionRef.current, callData.answer);
+        }
       } else if (callData?.offer && !peerConnectionRef.current) {
+        console.log("📥 Offer alındı, cevap veriliyor");
         const pc = setupPeerConnection();
         if (!pc) return;
         peerConnectionRef.current = pc;
         const answer = await createAnswer(pc, callData.offer);
-        if (answer) setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
+        if (answer) {
+          console.log("📝 Answer yazıldı");
+          setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
+        }
       }
     };
     handleSignaling();
@@ -412,16 +429,20 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   useEffect(() => {
     if (!remoteCandidates || !peerConnectionRef.current) return;
-    remoteCandidates.forEach(doc => {
-      if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id)) {
-        addIceCandidate(peerConnectionRef.current!, doc.candidate);
-        processedIceCandidatesRef.current.add(doc.id);
-      }
-    });
+    if (peerConnectionRef.current.remoteDescription) {
+      remoteCandidates.forEach(doc => {
+        if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id)) {
+          console.log("❄️ Remote ICE candidate alındı ve ekleniyor");
+          addIceCandidate(peerConnectionRef.current!, doc.candidate);
+          processedIceCandidatesRef.current.add(doc.id);
+        }
+      });
+    }
   }, [remoteCandidates, userId]);
 
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (joinedVoiceChannel) playSoundEffect('leave');
+    console.log("👋 Kanaldan ayrılınıyor...");
     if (peerConnectionRef.current) closePeerConnection(peerConnectionRef.current);
     peerConnectionRef.current = null;
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
@@ -449,6 +470,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (joinedVoiceChannel === channel) return;
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
     try {
+      console.log(`🎤 ${channel} kanalına katılınıyor...`);
       const stream = await getLocalAudioStream(audioSettings);
       if (!stream) throw new Error();
       localStreamRef.current = stream;
@@ -456,17 +478,18 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       setIsMuted(false);
       setIsDeafened(false);
       playSoundEffect('join');
-    } catch (error) { toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." }); }
+    } catch (error) { 
+      console.error("❌ Kanala katılma hatası:", error);
+      toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." }); 
+    }
   }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, playSoundEffect, toast]);
 
   const handleToggleScreenShare = async () => {
     if (!joinedVoiceChannel) return;
-
     if (isScreenSharing) {
       screenStreamRef.current?.getTracks().forEach(t => t.stop());
       screenStreamRef.current = null;
       setIsScreenSharing(false);
-      toast({ title: "Paylaşım Durduruldu", description: "Ekran paylaşımı sonlandırıldı." });
       handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
     } else {
       try {
@@ -474,12 +497,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         screenStreamRef.current = stream;
         setIsScreenSharing(true);
         stream.getVideoTracks()[0].onended = () => handleToggleScreenShare();
-        
-        if (peerConnectionRef.current) {
-          handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
-        }
-        
-        toast({ title: "Ekran Paylaşılıyor", description: "Ekranınız şu an kanaldaki diğer kişilere aktarılıyor." });
+        handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
       } catch (err) {
         console.error("Ekran paylaşımı hatası:", err);
       }
@@ -488,24 +506,17 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   const handleToggleCamera = async () => {
     if (!joinedVoiceChannel) return;
-
     if (isCameraOn) {
       cameraStreamRef.current?.getTracks().forEach(t => t.stop());
       cameraStreamRef.current = null;
       setIsCameraOn(false);
-      toast({ title: "Kamera Kapatıldı", description: "Görüntü paylaşımı sonlandırıldı." });
       handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         cameraStreamRef.current = stream;
         setIsCameraOn(true);
-        
-        if (peerConnectionRef.current) {
-          handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
-        }
-        
-        toast({ title: "Kamera Açıldı", description: "Görüntünüz şu an kanaldaki diğer kişilere aktarılıyor." });
+        handleLeaveVoiceChannel().then(() => handleJoinVoiceChannel(joinedVoiceChannel));
       } catch (err) {
         console.error("Kamera hatası:", err);
         toast({ variant: "destructive", title: "Hata", description: "Kameraya erişilemedi." });
@@ -661,7 +672,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                       "aspect-video bg-[#2B2D31] rounded-2xl flex flex-col items-center justify-center relative shadow-xl transition-all border-4 overflow-hidden",
                       isUserSpeaking ? "border-green-500 scale-[1.02]" : "border-transparent"
                     )}>
-                      {/* Video veya Avatar */}
                       {u.isCameraOn ? (
                         <video
                           ref={(el) => {

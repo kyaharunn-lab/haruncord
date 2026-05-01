@@ -130,7 +130,7 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
 
     return destination.stream;
   } catch (error) {
-    console.error("Gelişmiş ses işleme hatası:", error);
+    console.error("Gelişmiş ses işleme hatası (Raw Mic'e dönülüyor):", error);
     return stream;
   }
 };
@@ -144,26 +144,20 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
       autoGainControl: settings?.autoGainControl ?? true,
       sampleRate: 48000,
       channelCount: 1,
-      latency: 0,
-      
-      // Google/Chromium specific constraints
-      googEchoCancellation: true,
-      googAutoGainControl: true,
-      googNoiseSuppression: true,
-      googHighpassFilter: true,
-      googTypingNoiseDetection: true,
-      googAudioMirroring: false,
     };
 
-    const constraints: MediaStreamConstraints = {
-      audio: audioConstraints,
-      video: false,
-    };
-
-    const rawStream = await navigator.mediaDevices.getUserMedia(constraints);
+    const rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    console.log("🎤 Mikrofon stream alındı");
     
     if (rawStream && settings) {
-      return processAudioStream(rawStream, settings);
+      try {
+        const processed = processAudioStream(rawStream, settings);
+        console.log("✨ Ses filtreleri uygulandı");
+        return processed;
+      } catch (e) {
+        console.warn("⚠️ İşlenmiş stream oluşturulamadı, ham ses kullanılıyor");
+        return rawStream;
+      }
     }
 
     return rawStream;
@@ -178,26 +172,11 @@ export const createPeerConnection = (): RTCPeerConnection | null => {
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" }
+        { urls: "stun:stun1.l.google.com:19302" }
       ],
       iceCandidatePoolSize: 10,
     });
-
-    // Ses paketleri için öncelik ayarı (bazı tarayıcılarda desteklenir)
-    pc.onnegotiationneeded = () => {
-      pc.getSenders().forEach(sender => {
-        if (sender.track?.kind === 'audio') {
-          const params = sender.getParameters();
-          if (params.encodings && params.encodings.length > 0) {
-            params.encodings[0].priority = 'high';
-            params.encodings[0].networkPriority = 'high';
-            sender.setParameters(params).catch(() => {});
-          }
-        }
-      });
-    };
-
+    console.log("🔗 PeerConnection oluşturuldu");
     return pc;
   } catch (error) {
     console.error("PeerConnection oluşturulurken hata oluştu:", error);
@@ -211,21 +190,12 @@ export const addLocalTracks = (
 ): void => {
   try {
     const senders = pc.getSenders();
-
-    stream.getAudioTracks().forEach((track) => {
-      const alreadyAdded = senders.some((sender) => sender.track === track);
-
-      if (alreadyAdded) {
-        return;
+    stream.getTracks().forEach((track) => {
+      const alreadyAdded = senders.some((sender) => sender.track && sender.track.id === track.id);
+      if (!alreadyAdded) {
+        pc.addTrack(track, stream);
+        console.log(`📡 Local track eklendi: ${track.kind} (${track.id})`);
       }
-
-      const sender = pc.addTrack(track, stream);
-      
-      // Opus ses kalitesini optimize et
-      const params = sender.getParameters();
-      if (!params.encodings) params.encodings = [{}];
-      params.encodings[0].maxBitrate = 128000; // 128kbps max
-      sender.setParameters(params).catch(() => {});
     });
   } catch (error) {
     console.error("Yerel track eklenirken hata oluştu:", error);
@@ -236,11 +206,9 @@ export const createOffer = async (
   pc: RTCPeerConnection
 ): Promise<RTCSessionDescriptionInit | null> => {
   try {
-    const offer = await pc.createOffer({
-      offerToReceiveAudio: true,
-      voiceActivityDetection: true,
-    });
+    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
     await pc.setLocalDescription(offer);
+    console.log("📝 Offer oluşturuldu ve local description olarak ayarlandı");
     return offer;
   } catch (error) {
     console.error("Offer oluşturulurken hata oluştu:", error);
@@ -253,15 +221,11 @@ export const createAnswer = async (
   offer: RTCSessionDescriptionInit
 ): Promise<RTCSessionDescriptionInit | null> => {
   try {
-    if (pc.signalingState !== "stable") {
-      return null;
-    }
-
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
+    console.log("📥 Remote offer alındı ve remote description olarak ayarlandı");
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
+    console.log("📝 Answer oluşturuldu ve local description olarak ayarlandı");
     return answer;
   } catch (error) {
     console.error("Answer oluşturulurken hata oluştu:", error);
@@ -274,19 +238,9 @@ export const applyRemoteDescription = async (
   desc: RTCSessionDescriptionInit
 ): Promise<void> => {
   try {
-    if (desc.type === "answer") {
-      if (pc.signalingState !== "have-local-offer") {
-        return;
-      }
-    }
-
-    if (desc.type === "offer") {
-      if (pc.signalingState !== "stable") {
-        return;
-      }
-    }
-
+    if (pc.signalingState === "closed") return;
     await pc.setRemoteDescription(new RTCSessionDescription(desc));
+    console.log(`📥 Remote ${desc.type} başarıyla uygulandı`);
   } catch (error) {
     console.error("Remote description ayarlanırken hata oluştu:", error);
   }
@@ -299,55 +253,21 @@ export const addIceCandidate = async (
   candidate: RTCIceCandidateInit | null
 ): Promise<void> => {
   try {
-    if (!candidate) return;
-
+    if (!candidate || pc.signalingState === "closed") return;
     await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    console.log("❄️ ICE candidate başarıyla eklendi");
   } catch (error) {
-    console.error("ICE candidate eklenirken hata oluştu:", error);
+    console.warn("⚠️ ICE candidate eklenemedi (muhtemelen remote description henüz hazır değil):", error);
   }
 };
 
 export const closePeerConnection = (pc: RTCPeerConnection | null): void => {
   if (!pc) return;
-
   try {
-    pc.getSenders().forEach((sender) => {
-      if (sender.track) {
-        sender.track.stop();
-      }
-    });
-
-    pc.getReceivers().forEach((receiver) => {
-      if (receiver.track) {
-        receiver.track.stop();
-      }
-    });
-
-    pc.onicecandidate = null;
-    pc.ontrack = null;
-    pc.onconnectionstatechange = null;
-    pc.oniceconnectionstatechange = null;
-    pc.onsignalingstatechange = null;
-
+    pc.getSenders().forEach((sender) => { if (sender.track) sender.track.stop(); });
     pc.close();
+    console.log("🔌 PeerConnection kapatıldı");
   } catch (error) {
     console.error("Bağlantı kapatılırken hata oluştu:", error);
-  }
-};
-
-export const setAudioOutputDevice = async (
-  element: HTMLAudioElement | null,
-  deviceId: string
-): Promise<void> => {
-  if (!element || !deviceId) return;
-  
-  if ('setSinkId' in element) {
-    try {
-      await (element as any).setSinkId(deviceId);
-    } catch (error) {
-      console.error("Hoparlör çıkışı değiştirilemedi:", error);
-    }
-  } else {
-    console.warn("Bu tarayıcı setSinkId özelliğini desteklemiyor.");
   }
 };
