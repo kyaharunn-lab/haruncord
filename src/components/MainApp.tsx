@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { RoomSidebar } from "./RoomSidebar";
-import { Hash, MessageSquare, Video, MicOff } from "lucide-react";
+import { Hash, MessageSquare, MicOff } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -61,7 +61,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     qualityMode: "balanced"
   });
 
-  // --- WebRTC Mesh Refs ---
   const localStreamRef = useRef<MediaStream | null>(null);
   const pcsRef = useRef<Record<string, RTCPeerConnection>>({});
   const remoteAudiosRef = useRef<Record<string, HTMLAudioElement>>({});
@@ -73,7 +72,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const { toast } = useToast();
   const db = useFirestore();
 
-  // --- Dinamik Kanallar ---
   const roomsQuery = useMemoFirebase(() => db ? query(collection(db, "textChannels"), limit(20)) : null, [db]);
   const { data: roomsData } = useCollection(roomsQuery);
   const rooms = useMemo(() => roomsData?.map(r => r.id) || ["Genel"], [roomsData]);
@@ -82,7 +80,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const { data: voiceChannelsData } = useCollection(voiceChannelsQuery);
   const voiceChannels = useMemo(() => voiceChannelsData?.map(v => v.id) || ["Genel Ses"], [voiceChannelsData]);
 
-  // --- Mesajlaşma ---
   const messagesQuery = useMemoFirebase(() => {
     if (!db || activeView.type !== 'text') return null;
     return query(collection(db, "textChannels", activeView.id, "messages"), orderBy("createdAt", "asc"), limit(50));
@@ -103,18 +100,15 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     setMessageText("");
   };
 
-  // --- Presence Dinleme ---
-  const presenceQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
-  const { data: presenceData } = useCollection(presenceQuery);
+  const presenceDataQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
+  const { data: presenceData } = useCollection(presenceDataQuery);
   
   const activeUsers = useMemo(() => {
     if (!presenceData) return [];
     const now = Date.now();
-    // Sadece son 15 saniye içinde aktif olanları göster
     return presenceData.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
   }, [presenceData]);
 
-  // --- Ses Ayarları ---
   const handleVolumeChange = useCallback((targetUserId: string, volume: number) => {
     setUserVolumes(prev => {
       const next = { ...prev, [targetUserId]: volume };
@@ -179,7 +173,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     playSoundEffect('leave');
 
     try {
-      // 1. WebRTC Temizliği
       Object.entries(pcsRef.current).forEach(([id, pc]) => {
         closePeerConnection(pc);
         delete pcsRef.current[id];
@@ -198,7 +191,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         localStreamRef.current = null;
       }
 
-      // 2. Firestore Temizliği
       if (db && channelToLeave && userId) {
         const batch = writeBatch(db);
         batch.delete(doc(db, "voiceChannels", channelToLeave, "presence", userId));
@@ -211,6 +203,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           batch.delete(d.ref);
         });
         await batch.commit();
+        console.log("🔥 Firestore çağrı kayıtları temizlendi");
       }
     } catch (e) { console.warn("Firestore cleanup hatası", e); }
     finally {
@@ -225,22 +218,18 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     
     while (isCleaningUpRef.current) await new Promise(r => setTimeout(r, 50));
     
-    // Eğer zaten bir kanaldaysak çıkış yap
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
 
-    // 1. Kendi eski kayıtlarımızı temizle (Kanal değişmiş olsa bile userId bazlı temizlik)
     if (db) {
       try {
         await deleteDoc(doc(db, "voiceChannels", channel, "presence", userId));
       } catch (e) {}
     }
 
-    // 2. Gerçek aktif kullanıcıları sayarak kapasite kontrolü yap
     const currentPresenceSnap = await getDocs(collection(db!, "voiceChannels", channel, "presence"));
     const now = Date.now();
     const activeUsersCount = currentPresenceSnap.docs.filter(d => {
       const data = d.data();
-      // Kendi kaydımız ise sayma (az önce silmiş olsak da listelemede gecikebilir)
       if (data.userId === userId) return false;
       return data.lastSeen && (now - new Date(data.lastSeen).getTime() < 15000);
     }).length;
@@ -251,7 +240,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         title: "Kanal Dolu", 
         description: "Bu ses kanalı dolu. Maksimum 5 kişi katılabilir." 
       });
-      console.log("❌ kanal dolu (aktif kullanıcılar baz alındı)");
       return;
     }
 
@@ -278,7 +266,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     }
   }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, db, userId, playSoundEffect, toast]);
 
-  // --- Mesh Mesh Sinyalleşme Döngüsü ---
   useEffect(() => {
     const sessionId = connectionSessionRef.current;
     if (isCleaningUpRef.current || !joinedVoiceChannel || !localStreamRef.current || sessionId !== connectionSessionRef.current) return;
@@ -330,20 +317,26 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         if (sessionId !== connectionSessionRef.current || !snap.exists()) return;
         const data = snap.data();
         
-        if (isOfferer) {
-          if (data.answer && pc.signalingState === "have-local-offer") {
-            await setRemoteDescription(pc, data.answer);
-            console.log(`📥 answer alındı: ${callId}`);
-          }
-        } else {
-          if (data.offer && pc.signalingState === "stable") {
-            console.log(`📥 offer alındı: ${callId}`);
-            const answer = await createAnswer(pc, data.offer);
-            if (answer && sessionId === connectionSessionRef.current) {
-              setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
-              console.log(`📤 answer yazıldı: ${callId}`);
+        try {
+          if (isOfferer) {
+            // Sadece 'have-local-offer' durumundayken answer kabul edilir.
+            if (data.answer && pc.signalingState === "have-local-offer") {
+              await setRemoteDescription(pc, data.answer);
+              console.log(`📥 answer alındı ve uygulandı: ${callId}`);
+            }
+          } else {
+            // Sadece 'stable' durumundayken offer kabul edilir.
+            if (data.offer && pc.signalingState === "stable") {
+              console.log(`📥 offer alındı: ${callId}`);
+              const answer = await createAnswer(pc, data.offer);
+              if (answer && sessionId === connectionSessionRef.current) {
+                setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
+                console.log(`📤 answer yazıldı: ${callId}`);
+              }
             }
           }
+        } catch (err) {
+          console.warn(`⚠️ Sinyalleşme durum hatası (session: ${sessionId}, state: ${pc.signalingState}):`, err);
         }
       });
 
