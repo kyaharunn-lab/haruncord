@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit, onSnapshot, Unsubscribe } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit, onSnapshot, Unsubscribe, deleteDoc } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   addDocumentNonBlocking,
@@ -110,6 +110,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const activeUsers = useMemo(() => {
     if (!presenceData) return [];
     const now = Date.now();
+    // Sadece son 15 saniye içinde aktif olanları göster
     return presenceData.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
   }, [presenceData]);
 
@@ -223,13 +224,34 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     if (joinedVoiceChannel === channel) return;
     
     while (isCleaningUpRef.current) await new Promise(r => setTimeout(r, 50));
+    
+    // Eğer zaten bir kanaldaysak çıkış yap
     if (joinedVoiceChannel) await handleLeaveVoiceChannel();
 
-    // Kapasite Kontrolü
-    const currentPresence = await getDocs(collection(db!, "voiceChannels", channel, "presence"));
-    if (currentPresence.size >= 5) {
-      toast({ variant: "destructive", title: "Kanal Dolu", description: "Bu ses kanalı dolu. Maksimum 5 kişi katılabilir." });
-      console.log("❌ kanal dolu");
+    // 1. Kendi eski kayıtlarımızı temizle (Kanal değişmiş olsa bile userId bazlı temizlik)
+    if (db) {
+      try {
+        await deleteDoc(doc(db, "voiceChannels", channel, "presence", userId));
+      } catch (e) {}
+    }
+
+    // 2. Gerçek aktif kullanıcıları sayarak kapasite kontrolü yap
+    const currentPresenceSnap = await getDocs(collection(db!, "voiceChannels", channel, "presence"));
+    const now = Date.now();
+    const activeUsersCount = currentPresenceSnap.docs.filter(d => {
+      const data = d.data();
+      // Kendi kaydımız ise sayma (az önce silmiş olsak da listelemede gecikebilir)
+      if (data.userId === userId) return false;
+      return data.lastSeen && (now - new Date(data.lastSeen).getTime() < 15000);
+    }).length;
+
+    if (activeUsersCount >= 5) {
+      toast({ 
+        variant: "destructive", 
+        title: "Kanal Dolu", 
+        description: "Bu ses kanalı dolu. Maksimum 5 kişi katılabilir." 
+      });
+      console.log("❌ kanal dolu (aktif kullanıcılar baz alındı)");
       return;
     }
 
