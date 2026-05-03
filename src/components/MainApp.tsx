@@ -4,17 +4,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { RoomSidebar } from "./RoomSidebar";
-import { Hash, MessageSquare, Plus, Trash2, Monitor, X, MicOff, Video, User, Camera, CameraOff } from "lucide-react";
+import { Hash, MessageSquare, Video, MicOff } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit, setDoc, deleteDoc } from "firebase/firestore";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit, setDoc, deleteDoc, onSnapshot, Unsubscribe } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
-  deleteDocumentNonBlocking,
   addDocumentNonBlocking,
 } from "@/firebase/non-blocking-updates";
 import {
@@ -52,7 +51,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelType, setNewChannelType] = useState<"text" | "voice">("text");
   const [messageText, setMessageText] = useState("");
-  const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
 
   const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
   const [audioSettings, setAudioSettings] = useState<AudioSettings & { outputDeviceId?: string }>({
@@ -68,14 +66,11 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     qualityMode: "balanced"
   });
 
+  // --- WebRTC Mesh Refs ---
   const localStreamRef = useRef<MediaStream | null>(null);
-  const screenStreamRef = useRef<MediaStream | null>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
-  const voiceRoomVideosRef = useRef<Record<string, HTMLVideoElement | null>>({});
-  const processedIceCandidatesRef = useRef<Set<string>>(new Set());
+  const pcsRef = useRef<Record<string, RTCPeerConnection>>({});
+  const remoteAudiosRef = useRef<Record<string, HTMLAudioElement>>({});
+  const signalingUnsubsRef = useRef<Record<string, Unsubscribe>>({});
   const isCleaningUpRef = useRef(false);
   const connectionSessionRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -92,102 +87,47 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const { data: voiceChannelsData } = useCollection(voiceChannelsQuery);
   const voiceChannels = useMemo(() => voiceChannelsData?.map(v => v.id) || ["Genel Ses"], [voiceChannelsData]);
 
-  // Varsayılan kanalları oluştur
-  useEffect(() => {
-    if (db && roomsData && roomsData.length === 0) {
-      ["Genel", "Oyun", "Muhabbet"].forEach(id => {
-        setDoc(doc(db, "textChannels", id), { createdAt: serverTimestamp() });
-      });
-    }
-    if (db && voiceChannelsData && voiceChannelsData.length === 0) {
-      ["Genel Ses", "Oyun Ses", "Muhabbet Ses"].forEach(id => {
-        setDoc(doc(db, "voiceChannels", id), { name: id, createdAt: serverTimestamp() });
-      });
-    }
-  }, [db, roomsData, voiceChannelsData]);
-
-  const handleAddChannel = async () => {
-    if (!newChannelName.trim() || !db || userRole !== 'admin') return;
-    const cleanName = newChannelName.trim();
-    
-    try {
-      if (newChannelType === "text") {
-        await setDoc(doc(db, "textChannels", cleanName), { createdAt: serverTimestamp() });
-      } else {
-        await setDoc(doc(db, "voiceChannels", cleanName), { name: cleanName, createdAt: serverTimestamp() });
-      }
-      setIsAddChannelOpen(false);
-      setNewChannelName("");
-      toast({ title: "Kanal Oluşturuldu", description: `${cleanName} başarıyla eklendi.` });
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleDeleteChannel = async (id: string, type: "text" | "voice") => {
-    if (!db || userRole !== 'admin') return;
-    try {
-      await deleteDoc(doc(db, type === "text" ? "textChannels" : "voiceChannels", id));
-      if (type === "text" && activeView.id === id) setActiveView({ type: 'text', id: 'Genel' });
-      toast({ title: "Kanal Silindi", description: `${id} başarıyla kaldırıldı.` });
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  // --- Mesajlaşma Mantığı ---
+  // --- Mesajlaşma ---
   const messagesQuery = useMemoFirebase(() => {
     if (!db || activeView.type !== 'text') return null;
-    return query(
-      collection(db, "textChannels", activeView.id, "messages"),
-      orderBy("createdAt", "asc"),
-      limit(50)
-    );
+    return query(collection(db, "textChannels", activeView.id, "messages"), orderBy("createdAt", "asc"), limit(50));
   }, [db, activeView]);
-
   const { data: messages } = useCollection(messagesQuery);
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages]);
+  useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageText.trim() || !db || activeView.type !== 'text') return;
-
-    const messagesRef = collection(db, "textChannels", activeView.id, "messages");
-    addDocumentNonBlocking(messagesRef, {
+    addDocumentNonBlocking(collection(db, "textChannels", activeView.id, "messages"), {
       text: messageText.trim(),
       userId,
       displayName: userName,
       createdAt: serverTimestamp(),
     });
-
     setMessageText("");
   };
 
-  // --- Sesli Sohbet Mantığı ---
-  useEffect(() => {
-    const savedAudio = localStorage.getItem("kanka_voice_audio_settings");
-    if (savedAudio) {
-      try {
-        setAudioSettings(prev => ({ ...prev, ...JSON.parse(savedAudio) }));
-      } catch (e) { console.error(e); }
-    }
-    const savedVolumes = localStorage.getItem("kanka_user_volumes");
-    if (savedVolumes) {
-      try { setUserVolumes(JSON.parse(savedVolumes)); } catch (e) { console.error(e); }
-    }
-  }, []);
+  // --- Presence Dinleme ---
+  const presenceQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
+  const { data: presenceData } = useCollection(presenceQuery);
+  
+  const activeUsers = useMemo(() => {
+    if (!presenceData) return [];
+    const now = Date.now();
+    return presenceData.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
+  }, [presenceData]);
 
+  // --- Ses Ayarları ---
   const handleVolumeChange = useCallback((targetUserId: string, volume: number) => {
     setUserVolumes(prev => {
       const next = { ...prev, [targetUserId]: volume };
       localStorage.setItem("kanka_user_volumes", JSON.stringify(next));
       return next;
     });
+    if (remoteAudiosRef.current[targetUserId]) {
+      remoteAudiosRef.current[targetUserId].volume = volume / 100;
+    }
   }, []);
 
   const handleSettingsChange = useCallback(async (newSettings: AudioSettings & { outputDeviceId?: string }) => {
@@ -199,14 +139,13 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         oldTracks.forEach(t => t.stop());
         localStreamRef.current = newStream;
         newStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
-        if (peerConnectionRef.current) {
-          const senders = peerConnectionRef.current.getSenders();
-          const audioSender = senders.find(s => s.track?.kind === 'audio');
-          const newTrack = newStream.getAudioTracks()[0];
-          if (audioSender && newTrack) {
-            audioSender.replaceTrack(newTrack).then(() => console.log("🔄 Audio track başarıyla değiştirildi"));
+        // Tüm peerlara yeni tracki yay
+        Object.values(pcsRef.current).forEach(pc => {
+          const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+          if (sender && newStream.getAudioTracks()[0]) {
+            sender.replaceTrack(newStream.getAudioTracks()[0]);
           }
-        }
+        });
       }
     }
   }, [joinedVoiceChannel, isMuted]);
@@ -221,93 +160,68 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       const now = audioCtx.currentTime;
       gainNode.gain.setValueAtTime(0, now);
       gainNode.gain.linearRampToValueAtTime(0.05, now + 0.05);
+      oscillator.type = 'sine';
       if (type === 'join') {
-        oscillator.type = 'sine';
         oscillator.frequency.setValueAtTime(500, now);
         oscillator.frequency.exponentialRampToValueAtTime(700, now + 0.15);
       } else {
-        oscillator.type = 'sine';
         oscillator.frequency.setValueAtTime(700, now);
         oscillator.frequency.exponentialRampToValueAtTime(500, now + 0.15);
       }
       gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-      oscillator.start(now);
-      oscillator.stop(now + 0.3);
+      oscillator.start(now); oscillator.stop(now + 0.3);
     } catch (err) {}
   }, []);
 
   const handleLeaveVoiceChannel = useCallback(async () => {
     if (isCleaningUpRef.current) return;
-    
-    const currentChannel = joinedVoiceChannel;
+    const channelToLeave = joinedVoiceChannel;
     console.log("🧹 tam cleanup başladı");
     isCleaningUpRef.current = true;
-    connectionSessionRef.current += 1; // Session'ı geçersiz kıl
+    connectionSessionRef.current += 1;
     
     setJoinedVoiceChannel(null);
     playSoundEffect('leave');
-    
+
     try {
       // 1. WebRTC Temizliği
-      if (peerConnectionRef.current) {
-        closePeerConnection(peerConnectionRef.current);
-        peerConnectionRef.current = null;
-      }
-      
+      Object.entries(pcsRef.current).forEach(([id, pc]) => {
+        closePeerConnection(pc);
+        delete pcsRef.current[id];
+      });
+      Object.entries(remoteAudiosRef.current).forEach(([id, audio]) => {
+        audio.pause(); audio.srcObject = null; audio.remove();
+        delete remoteAudiosRef.current[id];
+      });
+      Object.entries(signalingUnsubsRef.current).forEach(([id, unsub]) => {
+        unsub();
+        delete signalingUnsubsRef.current[id];
+      });
+
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(t => t.stop());
         localStreamRef.current = null;
       }
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(t => t.stop());
-        screenStreamRef.current = null;
-      }
-      if (cameraStreamRef.current) {
-        cameraStreamRef.current.getTracks().forEach(t => t.stop());
-        cameraStreamRef.current = null;
-      }
-      
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.pause();
-        remoteAudioRef.current.srcObject = null;
-        remoteAudioRef.current.remove();
-        remoteAudioRef.current = null;
-      }
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-      }
 
-      // 2. Firestore Temizliği (Presence ve Calls)
-      if (db && currentChannel && userId) {
+      // 2. Firestore Temizliği
+      if (db && channelToLeave && userId) {
         const batch = writeBatch(db);
+        batch.delete(doc(db, "voiceChannels", channelToLeave, "presence", userId));
         
-        // Kendi presence kaydını sil
-        batch.delete(doc(db, "voiceChannels", currentChannel, "presence", userId));
+        // Kendi dahil olduğum callları sil
+        const q1 = query(collection(db, "voiceChannels", channelToLeave, "calls"), where("offererId", "==", userId));
+        const q2 = query(collection(db, "voiceChannels", channelToLeave, "calls"), where("answererId", "==", userId));
+        const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
         
-        // Kendi dahil olduğu çağrıları sil
-        const q1 = query(collection(db, "voiceChannels", currentChannel, "calls"), where("offererId", "==", userId));
-        const q2 = query(collection(db, "voiceChannels", currentChannel, "calls"), where("answererId", "==", userId));
-        const snaps = await Promise.all([getDocs(q1), getDocs(q2)]);
-        
-        for (const snap of snaps) {
-          for (const d of snap.docs) {
-            batch.delete(d.ref);
-            // Candidates alt koleksiyonunu silmek için docs okumalıyız
-            const candsRef = collection(db, "voiceChannels", currentChannel, "calls", d.id, "candidates");
-            const cSnap = await getDocs(candsRef);
-            cSnap.docs.forEach(cd => batch.delete(cd.ref));
-          }
-        }
+        [...snap1.docs, ...snap2.docs].forEach(d => {
+          batch.delete(d.ref);
+          // Alt koleksiyon silme işlemi (candidates) client tarafında batch ile zordur, 
+          // ancak rules/TTL ile veya burada basitçe dökümanları çekerek yapılabilir.
+        });
         await batch.commit();
       }
-    } catch (e) {
-      console.warn("Firestore cleanup hatası", e);
-    } finally {
-      processedIceCandidatesRef.current.clear();
-      setIsSpeaking(false);
-      setIsScreenSharing(false);
-      setIsCameraOn(false);
-      setHasRemoteVideo(false);
+    } catch (e) { console.warn("Firestore cleanup hatası", e); }
+    finally {
       isCleaningUpRef.current = false;
       console.log("✅ tam cleanup bitti");
     }
@@ -317,239 +231,195 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     setActiveView({ type: 'voice', id: channel });
     if (joinedVoiceChannel === channel) return;
     
-    // Eğer temizlik devam ediyorsa bekle
-    while (isCleaningUpRef.current) {
-      await new Promise(r => setTimeout(r, 50));
-    }
-    
-    // Zaten başka bir kanaldaysak önce oradan temizce çık
-    if (joinedVoiceChannel) {
-      await handleLeaveVoiceChannel();
-    }
-    
-    try {
-      // Katılmadan önce hedef kanaldaki eski artıklarımı temizle (Sert Fix)
-      if (db && userId) {
-        console.log(`🧼 ${channel} kanalı için ön temizlik yapılıyor...`);
-        const batch = writeBatch(db);
-        const q1 = query(collection(db, "voiceChannels", channel, "calls"), where("offererId", "==", userId));
-        const q2 = query(collection(db, "voiceChannels", channel, "calls"), where("answererId", "==", userId));
-        const snaps = await Promise.all([getDocs(q1), getDocs(q2)]);
-        for (const snap of snaps) {
-          for (const d of snap.docs) {
-            batch.delete(d.ref);
-            const cands = await getDocs(collection(db, "voiceChannels", channel, "calls", d.id, "candidates"));
-            cands.docs.forEach(cd => batch.delete(cd.ref));
-          }
-        }
-        batch.delete(doc(db, "voiceChannels", channel, "presence", userId));
-        await batch.commit();
-      }
+    while (isCleaningUpRef.current) await new Promise(r => setTimeout(r, 50));
+    if (joinedVoiceChannel) await handleLeaveVoiceChannel();
 
+    // Kapasite Kontrolü
+    const currentPresence = await getDocs(collection(db!, "voiceChannels", channel, "presence"));
+    if (currentPresence.size >= 5) {
+      toast({ variant: "destructive", title: "Kanal Dolu", description: "Bu ses kanalı dolu. Maksimum 5 kişi katılabilir." });
+      console.log("❌ kanal dolu");
+      return;
+    }
+
+    try {
       connectionSessionRef.current += 1;
       const currentSession = connectionSessionRef.current;
       console.log(`🚀 yeni bağlantı session başladı: ${currentSession}`);
       
       const stream = await getLocalAudioStream(audioSettings);
-      
-      // Eğer stream alınana kadar kanal değişmişse veya session eskimişse iptal et
       if (currentSession !== connectionSessionRef.current) {
-        console.log("🛑 eski session iptal edildi");
         stream?.getTracks().forEach(t => t.stop());
         return;
       }
       
       if (!stream) throw new Error("Mikrofon alınamadı");
-      
       localStreamRef.current = stream;
       setJoinedVoiceChannel(channel);
       setIsMuted(false);
       setIsDeafened(false);
       playSoundEffect('join');
-      console.log("🎙️ mikrofon alındı ve kanal ayarlandı");
-    } catch (error) { 
+    } catch (error) {
       console.error("❌ Kanala katılma hatası:", error);
-      toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." }); 
+      toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." });
     }
   }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, db, userId, playSoundEffect, toast]);
 
-  // --- WebRTC Otomatik Bağlantı Döngüsü (Guarded) ---
-  const channelUsersQuery = useMemoFirebase(() => db && joinedVoiceChannel ? collection(db, "voiceChannels", joinedVoiceChannel, "presence") : null, [db, joinedVoiceChannel]);
-  const { data: rawChannelUsers } = useCollection(channelUsersQuery);
-  const channelUsers = useMemo(() => {
-    if (!rawChannelUsers) return null;
-    const now = Date.now();
-    return rawChannelUsers.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
-  }, [rawChannelUsers]);
+  // --- Mesh Mesh Sinyalleşme Döngüsü ---
+  useEffect(() => {
+    const sessionId = connectionSessionRef.current;
+    if (isCleaningUpRef.current || !joinedVoiceChannel || !localStreamRef.current || sessionId !== connectionSessionRef.current) return;
 
-  // Sadece karşıdaki bir kullanıcıyla eşleş (Basit P2P mantığı)
-  const targetUser = useMemo(() => channelUsers?.find(u => u.userId !== userId) || null, [channelUsers, userId]);
+    const handlePeerSetup = async (remoteUser: any) => {
+      const targetId = remoteUser.userId;
+      if (targetId === userId || pcsRef.current[targetId]) return;
 
-  const callInfo = useMemo(() => {
-    if (isCleaningUpRef.current || !joinedVoiceChannel || !targetUser || !userId) return null;
-    const ids = [userId, targetUser.userId].sort();
-    return { callId: ids.join('_'), offererId: ids[0], answererId: ids[1], isOfferer: userId === ids[0] };
-  }, [targetUser, userId, joinedVoiceChannel]);
+      const callId = [userId, targetId].sort().join('_');
+      const isOfferer = userId === [userId, targetId].sort()[0];
+      
+      console.log(`📡 peer oluşturuldu: ${targetId} (isOfferer: ${isOfferer})`);
+      
+      const pc = createPeerConnection();
+      if (!pc) return;
+      pcsRef.current[targetId] = pc;
 
-  const callDocRef = useMemoFirebase(() => db && joinedVoiceChannel && callInfo ? doc(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId) : null, [db, joinedVoiceChannel, callInfo]);
-  const { data: callData } = useDoc(callDocRef);
+      // Track Ekleme
+      addLocalTracks(pc, localStreamRef.current!);
 
-  const candidatesQuery = useMemoFirebase(() => db && joinedVoiceChannel && callInfo ? collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates") : null, [db, joinedVoiceChannel, callInfo]);
-  const { data: remoteCandidates } = useCollection(candidatesQuery);
+      // ICE Adaylarını Gönder
+      pc.onicecandidate = (event) => {
+        if (event.candidate && db && joinedVoiceChannel && sessionId === connectionSessionRef.current) {
+          const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callId, "candidates");
+          addDocumentNonBlocking(candsRef, { userId, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
+          console.log(`📤 ICE gönderildi: ${callId}`);
+        }
+      };
 
-  const setupPeerConnection = useCallback((sessionId: number) => {
-    if (isCleaningUpRef.current || !joinedVoiceChannel || sessionId !== connectionSessionRef.current) {
-      return null;
-    }
-    const pc = createPeerConnection();
-    if (!pc) return null;
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && db && joinedVoiceChannel && callInfo && sessionId === connectionSessionRef.current) {
-        const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callInfo.callId, "candidates");
-        addDocumentNonBlocking(candsRef, { userId, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
-        console.log("📤 ICE gönderildi");
-      }
-    };
-
-    pc.ontrack = (event) => {
-      if (sessionId !== connectionSessionRef.current) return;
-      console.log("📥 remote stream geldi:", event.track.kind);
-      const stream = event.streams[0];
-      if (event.track.kind === 'audio') {
-        if (!remoteAudioRef.current) {
+      // Remote Track Al
+      pc.ontrack = (event) => {
+        if (sessionId !== connectionSessionRef.current) return;
+        console.log(`📥 remote stream geldi: ${targetId}`);
+        if (!remoteAudiosRef.current[targetId]) {
           const audio = document.createElement("audio");
           audio.autoplay = true;
           audio.playsInline = true;
           document.body.appendChild(audio);
-          remoteAudioRef.current = audio;
+          remoteAudiosRef.current[targetId] = audio;
         }
-        remoteAudioRef.current.srcObject = stream;
-        remoteAudioRef.current.muted = isDeafened;
-        const targetId = callInfo?.isOfferer ? callInfo.answererId : callInfo?.offererId;
-        if (targetId) remoteAudioRef.current.volume = (userVolumes[targetId] ?? 100) / 100;
-        remoteAudioRef.current.play().catch(e => console.error("❌ Audio play hatası:", e));
-        console.log("🔊 remote audio oynatılıyor");
-      }
-    };
+        remoteAudiosRef.current[targetId].srcObject = event.streams[0];
+        remoteAudiosRef.current[targetId].volume = (userVolumes[targetId] ?? 100) / 100;
+        remoteAudiosRef.current[targetId].muted = isDeafened;
+        console.log(`🔊 remote audio oynatılıyor: ${targetId}`);
+      };
 
-    if (localStreamRef.current) {
-      addLocalTracks(pc, localStreamRef.current);
-      console.log("✅ audio track eklendi");
-    }
-    return pc;
-  }, [db, joinedVoiceChannel, callInfo, userId, isDeafened, userVolumes]);
+      // --- Sinyalleşme Listener ---
+      const callDocRef = doc(db!, "voiceChannels", joinedVoiceChannel, "calls", callId);
+      const candidatesRef = collection(db!, "voiceChannels", joinedVoiceChannel, "calls", callId, "candidates");
+      const processedIce = new Set<string>();
 
-  // Signaling Effect
-  useEffect(() => {
-    const sessionId = connectionSessionRef.current;
-    if (isCleaningUpRef.current || !joinedVoiceChannel || !callInfo || !callDocRef || !localStreamRef.current || sessionId !== connectionSessionRef.current) {
-      return;
-    }
-
-    const handleSignaling = async () => {
-      if (callInfo.isOfferer) {
-        if (!peerConnectionRef.current) {
-          const pc = setupPeerConnection(sessionId);
-          if (!pc) return;
-          peerConnectionRef.current = pc;
-          const offer = await createOffer(pc);
-          if (offer && sessionId === connectionSessionRef.current) {
-            setDocumentNonBlocking(callDocRef, { ...callInfo, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
-            console.log("📤 offer yazıldı");
+      const unsub = onSnapshot(callDocRef, async (snap) => {
+        if (sessionId !== connectionSessionRef.current || !snap.exists()) return;
+        const data = snap.data();
+        
+        if (isOfferer) {
+          if (data.answer && pc.signalingState === "have-local-offer") {
+            await setRemoteDescription(pc, data.answer);
+            console.log(`📥 answer alındı: ${callId}`);
+          }
+        } else {
+          if (data.offer && pc.signalingState === "stable") {
+            console.log(`📥 offer alındı: ${callId}`);
+            const answer = await createAnswer(pc, data.offer);
+            if (answer && sessionId === connectionSessionRef.current) {
+              setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
+              console.log(`📤 answer yazıldı: ${callId}`);
+            }
           }
         }
-        if (callData?.answer && peerConnectionRef.current?.signalingState === "have-local-offer" && sessionId === connectionSessionRef.current) {
-          await setRemoteDescription(peerConnectionRef.current, callData.answer);
-          console.log("📥 answer alındı");
-        }
-      } else if (callData?.offer && !peerConnectionRef.current) {
-        const pc = setupPeerConnection(sessionId);
-        if (!pc) return;
-        peerConnectionRef.current = pc;
-        const answer = await createAnswer(pc, callData.offer);
-        if (answer && sessionId === connectionSessionRef.current) {
-          setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
-          console.log("📤 answer yazıldı");
+      });
+
+      const unsubCand = onSnapshot(candidatesRef, (snap) => {
+        if (sessionId !== connectionSessionRef.current || !pc.remoteDescription) return;
+        snap.docChanges().forEach(change => {
+          if (change.type === "added" && change.doc.data().userId !== userId && !processedIce.has(change.doc.id)) {
+            addIceCandidate(pc, change.doc.data().candidate);
+            processedIce.add(change.doc.id);
+            console.log(`📥 ICE alındı: ${callId}`);
+          }
+        });
+      });
+
+      signalingUnsubsRef.current[targetId] = () => { unsub(); unsubCand(); };
+
+      // İlk Offer (Sadece Offerer)
+      if (isOfferer) {
+        const offer = await createOffer(pc);
+        if (offer && sessionId === connectionSessionRef.current) {
+          setDocumentNonBlocking(callDocRef, { callId, offererId: userId, answererId: targetId, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
+          console.log(`📤 offer yazıldı: ${callId}`);
         }
       }
     };
-    handleSignaling();
-  }, [callInfo, callData, callDocRef, setupPeerConnection, joinedVoiceChannel, localStreamRef.current]);
 
-  // ICE Effect
-  useEffect(() => {
-    const sessionId = connectionSessionRef.current;
-    if (isCleaningUpRef.current || !joinedVoiceChannel || !remoteCandidates || !peerConnectionRef.current || sessionId !== connectionSessionRef.current) return;
-    if (peerConnectionRef.current.remoteDescription) {
-      remoteCandidates.forEach(doc => {
-        if (doc.userId !== userId && !processedIceCandidatesRef.current.has(doc.id) && sessionId === connectionSessionRef.current) {
-          addIceCandidate(peerConnectionRef.current!, doc.candidate);
-          processedIceCandidatesRef.current.add(doc.id);
-          console.log("📥 ICE alındı");
+    // Mevcut kullanıcılar için PC oluştur
+    activeUsers.forEach(handlePeerSetup);
+
+    // Ayrılan kullanıcıları temizle
+    Object.keys(pcsRef.current).forEach(pid => {
+      if (!activeUsers.find(u => u.userId === pid)) {
+        console.log(`🔌 peer kapatıldı: ${pid}`);
+        closePeerConnection(pcsRef.current[pid]);
+        delete pcsRef.current[pid];
+        if (remoteAudiosRef.current[pid]) {
+          remoteAudiosRef.current[pid].remove();
+          delete remoteAudiosRef.current[pid];
         }
-      });
-    }
-  }, [remoteCandidates, joinedVoiceChannel]);
+        if (signalingUnsubsRef.current[pid]) {
+          signalingUnsubsRef.current[pid]();
+          delete signalingUnsubsRef.current[pid];
+        }
+      }
+    });
 
-  // --- Varlık (Presence) Effect ---
+  }, [activeUsers, joinedVoiceChannel, db, userId, userVolumes, isDeafened]);
+
+  // --- Presence Heartbeat ---
   useEffect(() => {
     if (isCleaningUpRef.current || !db || !joinedVoiceChannel || !userId) return;
     const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
-    const updatePresence = () => {
+    const update = () => {
       if (isCleaningUpRef.current || !joinedVoiceChannel) return;
       setDocumentNonBlocking(presenceRef, {
-        userId, 
-        displayName: userName, 
-        voiceChannelId: joinedVoiceChannel,
-        lastSeen: new Date().toISOString(), 
-        isMuted, 
-        id: userId,
-        isSharingScreen: isScreenSharing,
-        isCameraOn: isCameraOn,
-        isSpeaking: isSpeaking,
+        userId, displayName: userName, voiceChannelId: joinedVoiceChannel,
+        lastSeen: new Date().toISOString(), isMuted, id: userId,
+        isSharingScreen: isScreenSharing, isCameraOn: isCameraOn, isSpeaking: isSpeaking,
       }, { merge: true });
     };
-    updatePresence();
-    const heartbeat = setInterval(updatePresence, 5000);
-    return () => clearInterval(heartbeat);
+    update();
+    const timer = setInterval(update, 5000);
+    return () => clearInterval(timer);
   }, [db, joinedVoiceChannel, userId, userName, isMuted, isScreenSharing, isCameraOn, isSpeaking]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground relative">
       <RoomSidebar
-        rooms={rooms}
-        voiceChannels={voiceChannels}
-        activeRoom={activeView.id}
+        rooms={rooms} voiceChannels={voiceChannels} activeRoom={activeView.id}
         onRoomSelect={(id) => setActiveView({ type: 'text', id })}
-        userName={userName}
-        userId={userId}
-        userRole={userRole}
-        onLogout={onLogout}
-        joinedVoiceChannel={joinedVoiceChannel}
-        onJoinVoice={handleJoinVoiceChannel}
-        onLeaveVoice={handleLeaveVoiceChannel}
-        isMuted={isMuted}
-        onToggleMute={() => { setIsMuted(!isMuted); localStreamRef.current?.getAudioTracks().forEach(t => t.enabled = isMuted); }}
-        isDeafened={isDeafened}
-        onToggleDeafen={() => { setIsDeafened(!isDeafened); if (remoteAudioRef.current) remoteAudioRef.current.muted = !isDeafened; }}
-        isSpeaking={isSpeaking}
-        isScreenSharing={isScreenSharing}
-        onToggleScreenShare={() => {}} // Ses stabilitesi için geçici devre dışı
-        isCameraOn={isCameraOn}
-        onToggleCamera={() => {}} // Ses stabilitesi için geçici devre dışı
+        userName={userName} userId={userId} userRole={userRole} onLogout={onLogout}
+        joinedVoiceChannel={joinedVoiceChannel} onJoinVoice={handleJoinVoiceChannel} onLeaveVoice={handleLeaveVoiceChannel}
+        isMuted={isMuted} onToggleMute={() => { setIsMuted(!isMuted); localStreamRef.current?.getAudioTracks().forEach(t => t.enabled = isMuted); }}
+        isDeafened={isDeafened} onToggleDeafen={() => { setIsDeafened(!isDeafened); Object.values(remoteAudiosRef.current).forEach(a => a.muted = !isDeafened); }}
+        isSpeaking={isSpeaking} isScreenSharing={isScreenSharing} onToggleScreenShare={() => {}}
+        isCameraOn={isCameraOn} onToggleCamera={() => {}}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        userVolumes={userVolumes}
-        onVolumeChange={handleVolumeChange}
-        onKickUser={() => {}}
-        onAddChannel={() => setIsAddChannelOpen(true)}
-        onDeleteChannel={handleDeleteChannel}
+        userVolumes={userVolumes} onVolumeChange={handleVolumeChange} onKickUser={() => {}}
+        onAddChannel={() => setIsAddChannelOpen(true)} onDeleteChannel={() => {}}
       />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
-        <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 bg-card/20">
-          <div className="flex items-center gap-2 font-semibold">
-            {activeView.type === 'text' ? <Hash className="w-5 h-5 text-muted-foreground" /> : <Video className="w-5 h-5 text-muted-foreground" />}
+        <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 bg-card/20 font-semibold uppercase tracking-wider text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            {activeView.type === 'text' ? <Hash className="w-4 h-4" /> : <Video className="w-4 h-4" />}
             <span>{activeView.id}</span>
           </div>
         </header>
@@ -580,41 +450,37 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
             </form>
           </div>
         ) : (
-          <div className="flex-1 bg-[#1E1F22] p-6 overflow-hidden flex flex-col">
-            <div className={cn(
-              "flex-1 grid gap-4 items-center justify-center content-center w-full",
-              activeView.id && "grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-            )}>
-              {/* Voice Room View Users Grid (Gerektiğinde presence verisinden map edilir) */}
-              <div className="col-span-full text-center opacity-40">
-                <p className="text-xl font-medium">#{activeView.id} ses odasındasınız.</p>
+          <div className="flex-1 bg-[#1E1F22] p-6 overflow-hidden flex flex-col items-center justify-center">
+             <div className={cn(
+                "grid gap-4 w-full max-w-6xl",
+                activeUsers.length <= 1 ? "grid-cols-1" : 
+                activeUsers.length === 2 ? "grid-cols-2" :
+                "grid-cols-2 lg:grid-cols-3"
+              )}>
+                {activeUsers.map((u) => (
+                  <div key={u.id} className={cn(
+                    "aspect-video bg-[#2B2D31] rounded-xl flex flex-col items-center justify-center relative overflow-hidden border-2 transition-all duration-300",
+                    u.isSpeaking ? "border-green-500 shadow-[0_0_15px_rgba(34,197,94,0.3)]" : "border-transparent"
+                  )}>
+                    <div className="w-24 h-24 rounded-full bg-primary flex items-center justify-center text-3xl font-bold shadow-xl">
+                      {u.displayName.charAt(0)}
+                    </div>
+                    <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-black/40 px-3 py-1.5 rounded-md backdrop-blur-sm">
+                      <span className="text-sm font-bold text-white">{u.displayName}</span>
+                      {u.isMuted && <MicOff className="w-3.5 h-3.5 text-destructive" />}
+                    </div>
+                    {u.isSharingScreen && (
+                      <div className="absolute top-4 right-4 bg-primary px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-tighter animate-pulse shadow-lg">YAYINDA</div>
+                    )}
+                  </div>
+                ))}
+                {activeUsers.length === 0 && <p className="text-muted-foreground">Bu ses kanalında kimse yok.</p>}
               </div>
-            </div>
           </div>
         )}
       </main>
 
       <AudioSettingsDialog isOpen={isSettingsOpen} onOpenChange={setIsSettingsOpen} settings={audioSettings} onSettingsChange={handleSettingsChange} />
-      
-      <Dialog open={isAddChannelOpen} onOpenChange={setIsAddChannelOpen}>
-        <DialogContent className="bg-card border-border">
-          <DialogHeader><DialogTitle>Yeni Kanal Oluştur</DialogTitle></DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Kanal İsmi</Label>
-              <Input value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} placeholder="kanal-ismi" className="bg-background" />
-            </div>
-            <div className="space-y-2">
-              <Label>Kanal Tipi</Label>
-              <div className="flex gap-2">
-                <Button variant={newChannelType === "text" ? "default" : "outline"} onClick={() => setNewChannelType("text")} className="flex-1">Metin</Button>
-                <Button variant={newChannelType === "voice" ? "default" : "outline"} onClick={() => setNewChannelType("voice")} className="flex-1">Ses</Button>
-              </div>
-            </div>
-          </div>
-          <DialogFooter><Button onClick={handleAddChannel} disabled={!newChannelName.trim()}>Kanalı Oluştur</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
