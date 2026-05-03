@@ -8,10 +8,9 @@ import { Hash, MessageSquare, Video, MicOff } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { useFirestore, useMemoFirebase, useCollection, useDoc } from "@/firebase";
-import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit, setDoc, deleteDoc, onSnapshot, Unsubscribe } from "firebase/firestore";
+import { useFirestore, useMemoFirebase, useCollection } from "@/firebase";
+import { doc, collection, serverTimestamp, getDocs, query, where, writeBatch, orderBy, limit, onSnapshot, Unsubscribe } from "firebase/firestore";
 import {
   setDocumentNonBlocking,
   addDocumentNonBlocking,
@@ -29,7 +28,6 @@ import {
 } from "@/lib/webrtc";
 import { AudioSettingsDialog } from "./AudioSettingsDialog";
 import { UserRole } from "@/app/page";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
 interface MainAppProps {
   userName: string;
@@ -47,9 +45,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isAddChannelOpen, setIsAddChannelOpen] = useState(false);
-  const [newChannelName, setNewChannelName] = useState("");
-  const [newChannelType, setNewChannelType] = useState<"text" | "voice">("text");
   const [messageText, setMessageText] = useState("");
 
   const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
@@ -139,7 +134,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         oldTracks.forEach(t => t.stop());
         localStreamRef.current = newStream;
         newStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
-        // Tüm peerlara yeni tracki yay
         Object.values(pcsRef.current).forEach(pc => {
           const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
           if (sender && newStream.getAudioTracks()[0]) {
@@ -208,15 +202,12 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         const batch = writeBatch(db);
         batch.delete(doc(db, "voiceChannels", channelToLeave, "presence", userId));
         
-        // Kendi dahil olduğum callları sil
         const q1 = query(collection(db, "voiceChannels", channelToLeave, "calls"), where("offererId", "==", userId));
         const q2 = query(collection(db, "voiceChannels", channelToLeave, "calls"), where("answererId", "==", userId));
         const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
         
         [...snap1.docs, ...snap2.docs].forEach(d => {
           batch.delete(d.ref);
-          // Alt koleksiyon silme işlemi (candidates) client tarafında batch ile zordur, 
-          // ancak rules/TTL ile veya burada basitçe dökümanları çekerek yapılabilir.
         });
         await batch.commit();
       }
@@ -277,16 +268,14 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       const callId = [userId, targetId].sort().join('_');
       const isOfferer = userId === [userId, targetId].sort()[0];
       
-      console.log(`📡 peer oluşturuldu: ${targetId} (isOfferer: ${isOfferer})`);
+      console.log(`📡 peer oluşturuldu: ${targetId} (isOfferer: ${isOfferer}, callId: ${callId})`);
       
       const pc = createPeerConnection();
       if (!pc) return;
       pcsRef.current[targetId] = pc;
 
-      // Track Ekleme
       addLocalTracks(pc, localStreamRef.current!);
 
-      // ICE Adaylarını Gönder
       pc.onicecandidate = (event) => {
         if (event.candidate && db && joinedVoiceChannel && sessionId === connectionSessionRef.current) {
           const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callId, "candidates");
@@ -295,7 +284,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         }
       };
 
-      // Remote Track Al
       pc.ontrack = (event) => {
         if (sessionId !== connectionSessionRef.current) return;
         console.log(`📥 remote stream geldi: ${targetId}`);
@@ -312,7 +300,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         console.log(`🔊 remote audio oynatılıyor: ${targetId}`);
       };
 
-      // --- Sinyalleşme Listener ---
       const callDocRef = doc(db!, "voiceChannels", joinedVoiceChannel, "calls", callId);
       const candidatesRef = collection(db!, "voiceChannels", joinedVoiceChannel, "calls", callId, "candidates");
       const processedIce = new Set<string>();
@@ -351,7 +338,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
       signalingUnsubsRef.current[targetId] = () => { unsub(); unsubCand(); };
 
-      // İlk Offer (Sadece Offerer)
       if (isOfferer) {
         const offer = await createOffer(pc);
         if (offer && sessionId === connectionSessionRef.current) {
@@ -361,10 +347,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       }
     };
 
-    // Mevcut kullanıcılar için PC oluştur
     activeUsers.forEach(handlePeerSetup);
 
-    // Ayrılan kullanıcıları temizle
     Object.keys(pcsRef.current).forEach(pid => {
       if (!activeUsers.find(u => u.userId === pid)) {
         console.log(`🔌 peer kapatıldı: ${pid}`);
@@ -383,7 +367,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   }, [activeUsers, joinedVoiceChannel, db, userId, userVolumes, isDeafened]);
 
-  // --- Presence Heartbeat ---
   useEffect(() => {
     if (isCleaningUpRef.current || !db || !joinedVoiceChannel || !userId) return;
     const presenceRef = doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId);
@@ -413,13 +396,13 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         isCameraOn={isCameraOn} onToggleCamera={() => {}}
         onOpenSettings={() => setIsSettingsOpen(true)}
         userVolumes={userVolumes} onVolumeChange={handleVolumeChange} onKickUser={() => {}}
-        onAddChannel={() => setIsAddChannelOpen(true)} onDeleteChannel={() => {}}
+        onAddChannel={() => {}} onDeleteChannel={() => {}}
       />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#312B38]">
         <header className="h-14 flex items-center justify-between px-4 border-b border-black/10 bg-card/20 font-semibold uppercase tracking-wider text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
-            {activeView.type === 'text' ? <Hash className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+            <Hash className="w-4 h-4" />
             <span>{activeView.id}</span>
           </div>
         </header>
@@ -469,9 +452,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                       <span className="text-sm font-bold text-white">{u.displayName}</span>
                       {u.isMuted && <MicOff className="w-3.5 h-3.5 text-destructive" />}
                     </div>
-                    {u.isSharingScreen && (
-                      <div className="absolute top-4 right-4 bg-primary px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-tighter animate-pulse shadow-lg">YAYINDA</div>
-                    )}
                   </div>
                 ))}
                 {activeUsers.length === 0 && <p className="text-muted-foreground">Bu ses kanalında kimse yok.</p>}
