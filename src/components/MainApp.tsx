@@ -27,6 +27,7 @@ import {
   type AudioSettings,
 } from "@/lib/webrtc";
 import { AudioSettingsDialog } from "./AudioSettingsDialog";
+import { AdminPanel } from "./AdminPanel";
 import { UserRole } from "@/app/page";
 
 interface MainAppProps {
@@ -45,6 +46,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   const [messageText, setMessageText] = useState("");
 
   const [userVolumes, setUserVolumes] = useState<Record<string, number>>({});
@@ -108,6 +110,22 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     const now = Date.now();
     return presenceData.filter(u => u.lastSeen && (now - new Date(u.lastSeen).getTime() < 15000));
   }, [presenceData]);
+
+  // KICK Takibi
+  useEffect(() => {
+    if (!db || !joinedVoiceChannel || !userId) return;
+    const unsub = onSnapshot(doc(db, "voiceChannels", joinedVoiceChannel, "presence", userId), (snap) => {
+      if (snap.exists() && snap.data().isKicked) {
+        handleLeaveVoiceChannel();
+        toast({
+          variant: "destructive",
+          title: "Kanaldan Atıldın",
+          description: "Bir yönetici tarafından bu ses kanalından uzaklaştırıldın."
+        });
+      }
+    });
+    return () => unsub();
+  }, [db, joinedVoiceChannel, userId]);
 
   const handleVolumeChange = useCallback((targetUserId: string, volume: number) => {
     setUserVolumes(prev => {
@@ -289,13 +307,11 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         if (event.candidate && db && joinedVoiceChannel && sessionId === connectionSessionRef.current) {
           const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callId, "candidates");
           addDocumentNonBlocking(candsRef, { userId, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
-          console.log(`📤 ICE gönderildi: ${callId}`);
         }
       };
 
       pc.ontrack = (event) => {
         if (sessionId !== connectionSessionRef.current) return;
-        console.log(`📥 remote stream geldi: ${targetId}`);
         if (!remoteAudiosRef.current[targetId]) {
           const audio = document.createElement("audio");
           audio.autoplay = true;
@@ -306,7 +322,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         remoteAudiosRef.current[targetId].srcObject = event.streams[0];
         remoteAudiosRef.current[targetId].volume = (userVolumes[targetId] ?? 100) / 100;
         remoteAudiosRef.current[targetId].muted = isDeafened;
-        console.log(`🔊 remote audio oynatılıyor: ${targetId}`);
       };
 
       const callDocRef = doc(db!, "voiceChannels", joinedVoiceChannel, "calls", callId);
@@ -319,25 +334,18 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         
         try {
           if (isOfferer) {
-            // Sadece 'have-local-offer' durumundayken answer kabul edilir.
             if (data.answer && pc.signalingState === "have-local-offer") {
               await setRemoteDescription(pc, data.answer);
-              console.log(`📥 answer alındı ve uygulandı: ${callId}`);
             }
           } else {
-            // Sadece 'stable' durumundayken offer kabul edilir.
             if (data.offer && pc.signalingState === "stable") {
-              console.log(`📥 offer alındı: ${callId}`);
               const answer = await createAnswer(pc, data.offer);
               if (answer && sessionId === connectionSessionRef.current) {
                 setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
-                console.log(`📤 answer yazıldı: ${callId}`);
               }
             }
           }
-        } catch (err) {
-          console.warn(`⚠️ Sinyalleşme durum hatası (session: ${sessionId}, state: ${pc.signalingState}):`, err);
-        }
+        } catch (err) {}
       });
 
       const unsubCand = onSnapshot(candidatesRef, (snap) => {
@@ -346,7 +354,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           if (change.type === "added" && change.doc.data().userId !== userId && !processedIce.has(change.doc.id)) {
             addIceCandidate(pc, change.doc.data().candidate);
             processedIce.add(change.doc.id);
-            console.log(`📥 ICE alındı: ${callId}`);
           }
         });
       });
@@ -357,7 +364,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         const offer = await createOffer(pc);
         if (offer && sessionId === connectionSessionRef.current) {
           setDocumentNonBlocking(callDocRef, { callId, offererId: userId, answererId: targetId, offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
-          console.log(`📤 offer yazıldı: ${callId}`);
         }
       }
     };
@@ -366,7 +372,6 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
     Object.keys(pcsRef.current).forEach(pid => {
       if (!activeUsers.find(u => u.userId === pid)) {
-        console.log(`🔌 peer kapatıldı: ${pid}`);
         closePeerConnection(pcsRef.current[pid]);
         delete pcsRef.current[pid];
         if (remoteAudiosRef.current[pid]) {
@@ -410,6 +415,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         isSpeaking={isSpeaking} isScreenSharing={isScreenSharing} onToggleScreenShare={() => {}}
         isCameraOn={isCameraOn} onToggleCamera={() => {}}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenAdminPanel={() => setIsAdminPanelOpen(true)}
         userVolumes={userVolumes} onVolumeChange={handleVolumeChange} onKickUser={() => {}}
         onAddChannel={() => {}} onDeleteChannel={() => {}}
       />
@@ -476,6 +482,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       </main>
 
       <AudioSettingsDialog isOpen={isSettingsOpen} onOpenChange={setIsSettingsOpen} settings={audioSettings} onSettingsChange={handleSettingsChange} />
+      <AdminPanel isOpen={isAdminPanelOpen} onOpenChange={setIsAdminPanelOpen} userRole={userRole} />
     </div>
   );
 }

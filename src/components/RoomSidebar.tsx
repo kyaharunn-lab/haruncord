@@ -3,13 +3,42 @@
 
 import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { Hash, LogOut, Mic, MicOff, PhoneOff, UserCircle2, Volume2, Headphones, Settings, VolumeX, Volume1, UserMinus, Plus, Trash2, ShieldCheck, Shield, Monitor, MonitorOff, Camera, CameraOff } from 'lucide-react';
+import { 
+  Hash, 
+  LogOut, 
+  Mic, 
+  MicOff, 
+  PhoneOff, 
+  UserCircle2, 
+  Volume2, 
+  Headphones, 
+  Settings, 
+  VolumeX, 
+  Volume1, 
+  UserMinus, 
+  Plus, 
+  Trash2, 
+  ShieldCheck, 
+  Shield, 
+  Monitor, 
+  MonitorOff, 
+  Camera, 
+  CameraOff,
+  Settings2
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFirestore, useMemoFirebase, useCollection } from '@/firebase';
 import { collection } from 'firebase/firestore';
 import { Slider } from '@/components/ui/slider';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { UserRole } from '@/app/page';
 
 interface RoomSidebarProps {
@@ -34,6 +63,7 @@ interface RoomSidebarProps {
   isCameraOn: boolean;
   onToggleCamera: () => void;
   onOpenSettings: () => void;
+  onOpenAdminPanel: () => void;
   userVolumes: Record<string, number>;
   onVolumeChange: (userId: string, volume: number) => void;
   onKickUser: (userId: string) => void;
@@ -61,8 +91,6 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, onVo
 
   if (activeUsers.length === 0) return null;
 
-  const canKick = userRole === 'admin' || userRole === 'mod';
-
   return (
     <div className="ml-4 space-y-0.5 mt-1">
       {activeUsers.map((u) => {
@@ -74,27 +102,12 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, onVo
               <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-[10px] font-bold text-accent-foreground shrink-0">{u.displayName.charAt(0)}</div>
               <div className="flex flex-col min-w-0">
                 <span className="text-sm text-sidebar-foreground/80 font-medium truncate max-w-[80px]">{u.displayName}</span>
-                <div className="flex gap-1">
-                  {u.isSharingScreen && (
-                    <span className="flex items-center gap-1 bg-primary/20 text-primary text-[8px] font-bold px-1 py-0.2 rounded leading-none w-fit border border-primary/30 uppercase">
-                      <Monitor className="w-2 h-2" />
-                    </span>
-                  )}
-                  {u.isCameraOn && (
-                    <span className="flex items-center gap-1 bg-green-500/20 text-green-500 text-[8px] font-bold px-1 py-0.2 rounded leading-none w-fit border border-green-500/30 uppercase">
-                      <Camera className="w-2 h-2" />
-                    </span>
-                  )}
-                </div>
               </div>
             </div>
             <div className="flex items-center gap-1">
               {u.isMuted && <MicOff className="w-3 h-3 text-destructive" />}
               {!isMe && (
                 <div className="flex items-center gap-1 opacity-0 group-hover/user:opacity-100 transition-opacity">
-                  {canKick && (
-                    <button onClick={() => onKickUser(u.userId)} className="text-destructive hover:text-red-400 p-0.5"><UserMinus className="w-3 h-3" /></button>
-                  )}
                   <Popover>
                     <PopoverTrigger asChild>
                       <button className="text-muted-foreground hover:text-foreground p-0.5">{volume === 0 ? <VolumeX className="w-3 h-3" /> : <Volume1 className="w-3 h-3" />}</button>
@@ -119,7 +132,7 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, onVo
 export function RoomSidebar({ 
   rooms, voiceChannels, activeRoom, onRoomSelect, userName, userId, userRole, onLogout, 
   joinedVoiceChannel, onJoinVoice, onLeaveVoice, isMuted, onToggleMute, isDeafened, onToggleDeafen, 
-  isSpeaking, isScreenSharing, onToggleScreenShare, isCameraOn, onToggleCamera, onOpenSettings, userVolumes, onVolumeChange, onKickUser, onAddChannel, onDeleteChannel 
+  isSpeaking, isScreenSharing, onToggleScreenShare, isCameraOn, onToggleCamera, onOpenSettings, onOpenAdminPanel, userVolumes, onVolumeChange, onKickUser, onAddChannel, onDeleteChannel 
 }: RoomSidebarProps) {
   const isAdmin = userRole === 'admin';
 
@@ -131,11 +144,11 @@ export function RoomSidebar({
           {isAdmin && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={onAddChannel}>
-                  <Plus className="w-4 h-4" />
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={onOpenAdminPanel}>
+                  <Settings2 className="w-4 h-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Kanal Ekle</TooltipContent>
+              <TooltipContent>Yönetim Paneli</TooltipContent>
             </Tooltip>
           )}
         </div>
@@ -159,9 +172,6 @@ export function RoomSidebar({
                     <Hash className="w-4 h-4" />
                     <span className="truncate">{room}</span>
                   </Button>
-                  {isAdmin && room !== "Genel" && (
-                    <button onClick={() => onDeleteChannel(room, "text")} className="opacity-0 group-hover:opacity-100 p-2 text-muted-foreground hover:text-destructive"><Trash2 className="w-3 h-3" /></button>
-                  )}
                 </div>
               ))}
             </div>
@@ -184,9 +194,6 @@ export function RoomSidebar({
                       <Volume2 className={cn("w-4 h-4", joinedVoiceChannel === channel ? "text-green-500" : "text-muted-foreground")} />
                       <span className="truncate">{channel}</span>
                     </Button>
-                    {isAdmin && channel !== "Genel Ses" && (
-                      <button onClick={() => onDeleteChannel(channel, "voice")} className="opacity-0 group-hover:opacity-100 p-2 text-muted-foreground hover:text-destructive"><Trash2 className="w-3 h-3" /></button>
-                    )}
                   </div>
                   <ChannelUserList channelId={channel} currentUserId={userId} userRole={userRole} userVolumes={userVolumes} onVolumeChange={onVolumeChange} onKickUser={onKickUser} />
                 </div>
@@ -206,22 +213,6 @@ export function RoomSidebar({
                 <div className="text-[11px] text-muted-foreground font-medium truncate max-w-[100px]">{joinedVoiceChannel}</div>
               </div>
               <div className="flex gap-0.5">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button variant="ghost" size="icon" className={cn("h-8 w-8", isCameraOn ? "text-green-500" : "text-muted-foreground")} onClick={onToggleCamera}>
-                      {isCameraOn ? <CameraOff className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{isCameraOn ? 'Kamerayı Kapat' : 'Kamerayı Aç'}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button variant="ghost" size="icon" className={cn("h-8 w-8", isScreenSharing ? "text-primary" : "text-muted-foreground")} onClick={onToggleScreenShare}>
-                      {isScreenSharing ? <MonitorOff className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{isScreenSharing ? 'Paylaşımı Durdur' : 'Ekran Paylaş'}</TooltipContent>
-                </Tooltip>
                 <Button variant="ghost" size="icon" className={cn("h-8 w-8", isMuted ? "text-destructive" : "text-muted-foreground")} onClick={onToggleMute}>
                   {isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </Button>
@@ -251,8 +242,30 @@ export function RoomSidebar({
             </div>
           </div>
           <div className="flex items-center gap-0.5">
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:bg-white/5" onClick={onOpenSettings}><Settings className="w-4 h-4" /></Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:bg-white/5" onClick={onLogout}><LogOut className="w-4 h-4" /></Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:bg-white/5">
+                  <Settings className="w-4 h-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48 bg-[#1E1F22] border-white/5 text-foreground">
+                <DropdownMenuItem onClick={onOpenSettings} className="gap-2 focus:bg-primary focus:text-white cursor-pointer">
+                  <Volume2 className="w-4 h-4" />
+                  Ses Ayarları
+                </DropdownMenuItem>
+                {isAdmin && (
+                  <DropdownMenuItem onClick={onOpenAdminPanel} className="gap-2 focus:bg-primary focus:text-white cursor-pointer">
+                    <Settings2 className="w-4 h-4" />
+                    Yönetim Paneli
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator className="bg-white/5" />
+                <DropdownMenuItem onClick={onLogout} className="gap-2 text-destructive focus:bg-destructive focus:text-white cursor-pointer">
+                  <LogOut className="w-4 h-4" />
+                  Çıkış Yap
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
