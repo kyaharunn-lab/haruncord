@@ -26,7 +26,7 @@ import {
   Database,
   Globe
 } from "lucide-react";
-import { useFirestore, useCollection } from "@/firebase";
+import { useFirestore, useCollection, useMemoFirebase } from "@/firebase";
 import { doc, deleteDoc, setDoc, collection, query, limit } from "firebase/firestore";
 import { UserRole } from "@/app/page";
 import { cn } from "@/lib/utils";
@@ -42,11 +42,14 @@ export function AdminPanel({ isOpen, onOpenChange, userRole }: AdminPanelProps) 
   const [newVoiceChannel, setNewVoiceChannel] = useState("");
   const db = useFirestore();
 
-  // Veri çekme
-  const { data: textChannels } = useCollection(db ? collection(db, "textChannels") : null);
-  const { data: voiceChannels } = useCollection(db ? collection(db, "voiceChannels") : null);
+  // Veri çekme - useMemoFirebase kullanımı zorunludur
+  const textChannelsQuery = useMemoFirebase(() => db ? collection(db, "textChannels") : null, [db]);
+  const voiceChannelsQuery = useMemoFirebase(() => db ? collection(db, "voiceChannels") : null, [db]);
   
-  // Tüm ses kanallarındaki aktif kullanıcıları topla
+  const { data: textChannels } = useCollection(textChannelsQuery);
+  const { data: voiceChannels } = useCollection(voiceChannelsQuery);
+  
+  // Tüm ses kanallarındaki aktif kullanıcıları topla (Bu kısım statik istatistikler içindir)
   const [allPresence, setAllPresence] = useState<any[]>([]);
   
   // Basit sistem durumu verileri
@@ -111,11 +114,11 @@ export function AdminPanel({ isOpen, onOpenChange, userRole }: AdminPanelProps) 
                 <div className="space-y-4">
                   <Label className="text-xs font-bold uppercase text-muted-foreground">Yeni Metin Kanalı</Label>
                   <div className="flex gap-2">
-                    <Input 
+                    <input 
                       placeholder="kanal-adi" 
                       value={newTextChannel} 
                       onChange={(e) => setNewTextChannel(e.target.value)}
-                      className="bg-black/20 border-none h-9"
+                      className="bg-black/20 border-none h-9 w-full rounded-md px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                     />
                     <Button size="sm" onClick={handleAddTextChannel}><Plus className="w-4 h-4" /></Button>
                   </div>
@@ -123,11 +126,11 @@ export function AdminPanel({ isOpen, onOpenChange, userRole }: AdminPanelProps) 
                 <div className="space-y-4">
                   <Label className="text-xs font-bold uppercase text-muted-foreground">Yeni Ses Kanalı</Label>
                   <div className="flex gap-2">
-                    <Input 
+                    <input 
                       placeholder="Ses Kanalı" 
                       value={newVoiceChannel} 
                       onChange={(e) => setNewVoiceChannel(e.target.value)}
-                      className="bg-black/20 border-none h-9"
+                      className="bg-black/20 border-none h-9 w-full rounded-md px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                     />
                     <Button size="sm" onClick={handleAddVoiceChannel}><Plus className="w-4 h-4" /></Button>
                   </div>
