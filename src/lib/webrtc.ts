@@ -19,6 +19,18 @@ export interface AudioSettings {
 
 const processedStreamCleanups = new WeakMap<MediaStream, () => void>();
 
+export const getTurnServerConfig = (): RTCIceServer | null => {
+  const url = process.env.NEXT_PUBLIC_TURN_URL;
+  if (!url) return null;
+  return {
+    urls: url,
+    username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+    credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+  };
+};
+
+export const isTurnConfigured = (): boolean => Boolean(process.env.NEXT_PUBLIC_TURN_URL);
+
 /**
  * Ham ses akışını Web Audio API ile işleyerek gelişmiş gürültü engelleme, 
  * kazanç ve ayarlanabilir gürültü kapısı uygular.
@@ -185,14 +197,16 @@ export const getLocalAudioStream = async (settings?: AudioSettings): Promise<Med
 
 export const createPeerConnection = (): RTCPeerConnection | null => {
   try {
+    const turnServer = getTurnServerConfig();
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" }
+        { urls: "stun:stun1.l.google.com:19302" },
+        ...(turnServer ? [turnServer] : [])
       ],
       iceCandidatePoolSize: 10,
     });
-    console.log("🔗 PeerConnection oluşturuldu");
+    console.log(`🔗 PeerConnection oluşturuldu (${turnServer ? "TURN enabled" : "STUN only"})`);
     return pc;
   } catch (error) {
     console.error("PeerConnection oluşturulurken hata oluştu:", error);

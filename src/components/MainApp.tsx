@@ -25,6 +25,7 @@ import {
   setRemoteDescription,
   addIceCandidate,
   stopMediaStream,
+  isTurnConfigured,
   type AudioSettings,
 } from "@/lib/webrtc";
 import { AudioSettingsDialog } from "./AudioSettingsDialog";
@@ -72,10 +73,32 @@ interface PeerRuntimeState {
   reconnectTimer?: ReturnType<typeof setTimeout>;
   connectionTimer?: ReturnType<typeof setTimeout>;
   status: PeerConnectionStatus;
+  voiceSessionId: string;
+  offerSent: boolean;
+  offerReceived: boolean;
+  answerSent: boolean;
+  answerReceived: boolean;
+  iceSentCount: number;
+  iceReceivedCount: number;
+  remoteTrackReceived: boolean;
 }
 
 type PeerConnectionStatus = "new" | "connecting" | "connected" | "disconnected" | "failed" | "closed";
 type ConnectionQuality = "excellent" | "good" | "poor" | "reconnecting";
+type VoicePeerStage =
+  | "idle"
+  | "getting-mic"
+  | "signaling"
+  | "ice-connecting"
+  | "connected"
+  | "audio-playing"
+  | "mic-denied"
+  | "autoplay-blocked"
+  | "signaling-timeout"
+  | "ice-failed"
+  | "turn-required"
+  | "remote-track-missing"
+  | "rejoin-cleanup-failed";
 
 interface PeerDebugInfo {
   status: PeerConnectionStatus;
@@ -92,6 +115,17 @@ interface PeerDebugInfo {
   lastError?: string;
   needsTurnHint?: boolean;
   timedOut?: boolean;
+  stage?: VoicePeerStage;
+  voiceSessionId?: string;
+  offerSent?: boolean;
+  offerReceived?: boolean;
+  answerSent?: boolean;
+  answerReceived?: boolean;
+  iceSentCount?: number;
+  iceReceivedCount?: number;
+  remoteTrackReceived?: boolean;
+  audioElementExists?: boolean;
+  turnConfigured?: boolean;
 }
 
 interface VoiceAnalyserCleanup {
@@ -160,6 +194,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
   const isDeafenedRef = useRef(false);
   const isCleaningUpRef = useRef(false);
   const connectionSessionRef = useRef(0);
+  const voiceSessionIdRef = useRef<string>("idle");
   const dbRef = useRef(db);
   const peerQualityRef = useRef<Record<string, ConnectionQuality>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -205,6 +240,11 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       };
     });
   }, []);
+
+  const setPeerStage = useCallback((targetId: string, stage: VoicePeerStage, lastError?: string) => {
+    updatePeerDebug(targetId, { stage, lastError });
+    appendVoiceLog(`${targetId}: stage ${stage}${lastError ? ` (${lastError})` : ""}`);
+  }, [appendVoiceLog, updatePeerDebug]);
 
   const refreshLocalMicDebug = useCallback((stream: MediaStream | null, patch?: Partial<LocalMicDebug>) => {
     const tracks = stream?.getAudioTracks() ?? [];
@@ -336,7 +376,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       audio.volume = (userVolumesRef.current[targetId] ?? 100) / 100;
       await audio.play();
       setBlockedAudioUserIds((prev) => prev.filter((id) => id !== targetId));
-      updatePeerDebug(targetId, { audioPlayStatus: "playing", lastError: undefined });
+      updatePeerDebug(targetId, { stage: "audio-playing", audioPlayStatus: "playing", audioElementExists: true, lastError: undefined });
       appendVoiceLog(`${targetId}: audio play ok (${reason})`);
       return true;
     } catch (error) {
@@ -344,7 +384,9 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       console.warn("Remote audio play failed", { targetId, reason, error });
       setBlockedAudioUserIds((prev) => prev.includes(targetId) ? prev : [...prev, targetId]);
       updatePeerDebug(targetId, {
+        stage: "autoplay-blocked",
         audioPlayStatus: "blocked",
+        audioElementExists: true,
         lastError: `audio play blocked: ${message}`,
       });
       appendVoiceLog(`${targetId}: audio play engellendi (${reason})`);
@@ -366,6 +408,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       ...prev,
       [targetId]: {
         status: state.status,
+        stage: prev[targetId]?.stage,
         iceState: pcsRef.current[targetId]?.iceConnectionState,
         signalingState: pcsRef.current[targetId]?.signalingState,
         attempts: state.reconnectAttempts,
@@ -374,6 +417,16 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         callSessionId: state.callSessionId,
         quality: peerQualityRef.current[targetId],
         localTrackCount: pcsRef.current[targetId]?.getSenders().filter((sender) => sender.track?.kind === "audio").length,
+        voiceSessionId: state.voiceSessionId,
+        offerSent: state.offerSent,
+        offerReceived: state.offerReceived,
+        answerSent: state.answerSent,
+        answerReceived: state.answerReceived,
+        iceSentCount: state.iceSentCount,
+        iceReceivedCount: state.iceReceivedCount,
+        remoteTrackReceived: state.remoteTrackReceived,
+        audioElementExists: Boolean(remoteAudiosRef.current[targetId]),
+        turnConfigured: isTurnConfigured(),
       },
     }));
   }, []);
@@ -592,6 +645,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     console.log("🧹 tam cleanup başladı");
     isCleaningUpRef.current = true;
     connectionSessionRef.current += 1;
+    voiceSessionIdRef.current = `leaving-${Date.now()}`;
     
     setJoinedVoiceChannel(null);
     stopLocalSpeakingAnalyser();
@@ -708,6 +762,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       localStreamRef.current = stream;
       refreshLocalMicDebug(stream, { permission: "granted", lastError: undefined });
       startLocalSpeakingAnalyser(stream);
+      voiceSessionIdRef.current = `${userId}-${channel}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       setJoinedVoiceChannel(channel);
       setIsMuted(false);
       setIsDeafened(false);
@@ -742,25 +797,38 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       const pc = createPeerConnection();
       if (!pc) return;
       pcsRef.current[targetId] = pc;
+      const currentVoiceSessionId = voiceSessionIdRef.current;
       peerStatesRef.current[targetId] = {
         callId,
         isOfferer,
         callSessionId,
+        voiceSessionId: currentVoiceSessionId,
         pendingIce: [],
         pendingCandidateDocs: [],
         processedIce: new Set<string>(),
         hasRemoteDescription: false,
         reconnectAttempts: 0,
         status: "new",
+        offerSent: false,
+        offerReceived: false,
+        answerSent: false,
+        answerReceived: false,
+        iceSentCount: 0,
+        iceReceivedCount: 0,
+        remoteTrackReceived: false,
       };
       syncPeerDebug(targetId);
+      setPeerStage(targetId, "signaling");
 
       addLocalTracks(pc, localStreamRef.current!);
       updatePeerDebug(targetId, {
+        stage: "signaling",
+        voiceSessionId: currentVoiceSessionId,
         localTrackCount: pc.getSenders().filter((sender) => sender.track?.kind === "audio").length,
         signalingState: pc.signalingState,
         iceState: pc.iceConnectionState,
         audioPlayStatus: "idle",
+        turnConfigured: isTurnConfigured(),
       });
       peerStatesRef.current[targetId].connectionTimer = setTimeout(() => {
         const latest = peerStatesRef.current[targetId];
@@ -768,10 +836,13 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         if (!latest || !latestPc || latest.status === "connected" || latest.status === "closed") return;
         updatePeerDebug(targetId, {
           timedOut: true,
-          needsTurnHint: true,
+          stage: latest.offerSent || latest.offerReceived || latest.answerSent || latest.answerReceived ? "remote-track-missing" : "signaling-timeout",
+          needsTurnHint: latest.offerSent || latest.offerReceived || latest.answerSent || latest.answerReceived,
           iceState: latestPc.iceConnectionState,
           signalingState: latestPc.signalingState,
-          lastError: "15sn icinde baglanti kurulamadi. Farkli internet/NAT icin TURN gerekebilir.",
+          lastError: latest.offerSent || latest.offerReceived || latest.answerSent || latest.answerReceived
+            ? "15sn icinde baglanti/remote track gelmedi. Farkli internet/NAT icin TURN gerekebilir."
+            : "15sn icinde signaling tamamlanmadi.",
         });
         appendVoiceLog(`${targetId}: 15sn timeout, TURN gerekebilir`);
         requestReconnect();
@@ -781,7 +852,10 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         if (event.candidate && db && joinedVoiceChannel && sessionId === connectionSessionRef.current) {
           const candsRef = collection(db, "voiceChannels", joinedVoiceChannel, "calls", callId, "candidates");
           const peerState = peerStatesRef.current[targetId];
+          if (!peerState || peerState.voiceSessionId !== voiceSessionIdRef.current) return;
+          peerState.iceSentCount += 1;
           addDocumentNonBlocking(candsRef, { userId, callSessionId: peerState?.callSessionId ?? null, candidate: event.candidate.toJSON(), createdAt: serverTimestamp() });
+          updatePeerDebug(targetId, { iceSentCount: peerState.iceSentCount });
           appendVoiceLog(`${targetId}: local ICE yazildi`);
         } else if (!event.candidate) {
           appendVoiceLog(`${targetId}: ICE gathering tamamlandi`);
@@ -790,6 +864,9 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
       pc.ontrack = (event) => {
         if (sessionId !== connectionSessionRef.current) return;
+        const peerState = peerStatesRef.current[targetId];
+        if (!peerState || peerState.voiceSessionId !== voiceSessionIdRef.current) return;
+        peerState.remoteTrackReceived = true;
         appendVoiceLog(`${targetId}: remote track geldi (${event.track.kind})`);
         if (!remoteAudiosRef.current[targetId]) {
           const audio = document.createElement("audio");
@@ -818,7 +895,10 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         remoteAudiosRef.current[targetId].srcObject = remoteStream;
         startRemoteSpeakingAnalyser(targetId, remoteStream);
         updatePeerDebug(targetId, {
+          stage: "connected",
           remoteTrackCount: remoteStream.getAudioTracks().length,
+          remoteTrackReceived: true,
+          audioElementExists: true,
           signalingState: pc.signalingState,
           iceState: pc.iceConnectionState,
         });
@@ -880,6 +960,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         const nextState = pc.connectionState as PeerConnectionStatus;
         setPeerStatus(targetId, nextState);
         updatePeerDebug(targetId, {
+          stage: nextState === "connected" ? "connected" : nextState === "failed" ? "ice-failed" : nextState === "connecting" ? "ice-connecting" : undefined,
           signalingState: pc.signalingState,
           iceState: pc.iceConnectionState,
           needsTurnHint: nextState === "failed" ? true : undefined,
@@ -893,6 +974,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       pc.oniceconnectionstatechange = () => {
         const nextState = pc.iceConnectionState;
         updatePeerDebug(targetId, {
+          stage: nextState === "failed" ? (isTurnConfigured() ? "ice-failed" : "turn-required") : nextState === "checking" ? "ice-connecting" : undefined,
           iceState: nextState,
           signalingState: pc.signalingState,
           needsTurnHint: nextState === "failed" ? true : undefined,
@@ -986,22 +1068,26 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
               await setRemoteDescription(pc, data.answer);
               peerState.hasRemoteDescription = !!pc.remoteDescription;
               peerState.handledAnswerSessionId = incomingCallSessionId;
+              peerState.answerReceived = true;
               appendVoiceLog(`${targetId}: remote answer set`);
-              updatePeerDebug(targetId, { signalingState: pc.signalingState, iceState: pc.iceConnectionState });
+              updatePeerDebug(targetId, { stage: "ice-connecting", answerReceived: true, signalingState: pc.signalingState, iceState: pc.iceConnectionState });
               await flushPendingIce();
               syncPeerDebug(targetId);
             }
           } else {
             if (data.offer && incomingCallSessionId && peerState.handledOfferSessionId !== incomingCallSessionId && pc.signalingState === "stable") {
+              peerState.offerReceived = true;
               const answer = await createAnswer(pc, data.offer);
               peerState.hasRemoteDescription = !!pc.remoteDescription;
               peerState.handledOfferSessionId = incomingCallSessionId;
               appendVoiceLog(`${targetId}: remote offer set`);
-              updatePeerDebug(targetId, { signalingState: pc.signalingState, iceState: pc.iceConnectionState });
+              updatePeerDebug(targetId, { stage: "signaling", offerReceived: true, signalingState: pc.signalingState, iceState: pc.iceConnectionState });
               await flushPendingIce();
               if (answer && sessionId === connectionSessionRef.current) {
+                peerState.answerSent = true;
                 setDocumentNonBlocking(callDocRef, { answer: { type: answer.type, sdp: answer.sdp }, answererId: userId }, { merge: true });
                 appendVoiceLog(`${targetId}: answer gönderildi`);
+                updatePeerDebug(targetId, { stage: "ice-connecting", answerSent: true });
                 syncPeerDebug(targetId);
               }
             }
@@ -1024,14 +1110,16 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           ) {
           const candidate = candidateData.candidate as RTCIceCandidateInit;
           const candidateSessionId = typeof candidateData.callSessionId === "string" ? candidateData.callSessionId : undefined;
-          if (!peerState.callSessionId) {
-            peerState.pendingCandidateDocs.push({ id: change.doc.id, callSessionId: candidateSessionId, candidate });
-            appendVoiceLog(`${targetId}: remote ICE queued (session bekleniyor)`);
-            return;
-          }
-          if (candidateSessionId !== peerState.callSessionId) return;
-          peerState.processedIce.add(change.doc.id);
-          if (pc.remoteDescription) {
+            if (!peerState.callSessionId) {
+              peerState.pendingCandidateDocs.push({ id: change.doc.id, callSessionId: candidateSessionId, candidate });
+              appendVoiceLog(`${targetId}: remote ICE queued (session bekleniyor)`);
+              return;
+            }
+            if (candidateSessionId !== peerState.callSessionId) return;
+            peerState.processedIce.add(change.doc.id);
+            peerState.iceReceivedCount += 1;
+            updatePeerDebug(targetId, { iceReceivedCount: peerState.iceReceivedCount });
+            if (pc.remoteDescription) {
             void addIceCandidate(pc, candidate);
             appendVoiceLog(`${targetId}: remote ICE eklendi`);
           } else {
@@ -1047,8 +1135,12 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       if (isOfferer) {
         const offer = await createOffer(pc);
         if (offer && sessionId === connectionSessionRef.current) {
+          const peerState = peerStatesRef.current[targetId];
+          if (!peerState || peerState.voiceSessionId !== voiceSessionIdRef.current) return;
+          peerState.offerSent = true;
           setDocumentNonBlocking(callDocRef, { callId, callSessionId, offererId: userId, answererId: targetId, offer: { type: offer.type, sdp: offer.sdp }, answer: null, createdAt: serverTimestamp() }, { merge: true });
           appendVoiceLog(`${targetId}: offer gönderildi`);
+          updatePeerDebug(targetId, { stage: "signaling", offerSent: true });
           syncPeerDebug(targetId);
         }
       }
@@ -1161,6 +1253,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       if (isCleaningUpRef.current || !joinedVoiceChannel) return;
       setDocumentNonBlocking(presenceRef, {
         userId, displayName: userName, voiceChannelId: joinedVoiceChannel,
+        voiceSessionId: voiceSessionIdRef.current,
         lastSeen: new Date().toISOString(), isMuted, isDeafened, id: userId,
         isSharingScreen: isScreenSharing, isCameraOn: isCameraOn, isSpeaking: isSpeaking,
       }, { merge: true });
@@ -1590,7 +1683,14 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                   <span>signaling</span><span className="truncate text-right">{info.signalingState ?? "-"}</span>
                   <span>tracks</span><span className="text-right">{info.localTrackCount ?? 0}/{info.remoteTrackCount ?? 0}</span>
                   <span>audio</span><span className="truncate text-right">{info.audioPlayStatus ?? "idle"}</span>
+                  <span>stage</span><span className="truncate text-right">{info.stage ?? "idle"}</span>
                   <span>quality</span><span className="truncate text-right">{info.quality ?? "-"}</span>
+                  <span>offer</span><span className="text-right">{info.offerSent ? "sent" : "-"} / {info.offerReceived ? "recv" : "-"}</span>
+                  <span>answer</span><span className="text-right">{info.answerSent ? "sent" : "-"} / {info.answerReceived ? "recv" : "-"}</span>
+                  <span>ice count</span><span className="text-right">{info.iceSentCount ?? 0}/{info.iceReceivedCount ?? 0}</span>
+                  <span>remote track</span><span className="text-right">{info.remoteTrackReceived ? "yes" : "no"}</span>
+                  <span>audio el</span><span className="text-right">{info.audioElementExists ? "yes" : "no"}</span>
+                  <span>TURN</span><span className="text-right">{info.turnConfigured ? "configured" : "not configured"}</span>
                 </div>
                 {info.needsTurnHint && (
                   <div className="mt-1 rounded border border-amber-400/20 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
