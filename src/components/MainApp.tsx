@@ -143,6 +143,7 @@ const MAX_VOICE_USERS = 5;
 const ACTIVE_PRESENCE_MS = 15000;
 const STALE_PRESENCE_MS = 30000;
 const MAX_RECONNECT_ATTEMPTS = 3;
+const AUDIO_SETTINGS_STORAGE_KEY = "kanka_audio_settings";
 
 export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) {
   const [activeView, setActiveView] = useState<{ type: 'text' | 'voice', id: string }>({ type: 'text', id: 'Genel' });
@@ -218,6 +219,17 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     peerQualityRef.current = peerQuality;
   }, [peerQuality]);
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(AUDIO_SETTINGS_STORAGE_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as Partial<AudioSettings & { outputDeviceId?: string }>;
+      setAudioSettings((prev) => ({ ...prev, ...parsed }));
+    } catch (error) {
+      console.warn("Audio settings okunamadi", error);
+    }
+  }, []);
+
   const appendVoiceLog = useCallback((message: string) => {
     const stamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     setVoiceDebugLogs((prev) => [`${stamp} ${message}`, ...prev].slice(0, 80));
@@ -255,6 +267,16 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       ...patch,
     }));
   }, []);
+
+  const applyOutputDevice = useCallback(async (audio: HTMLAudioElement, outputDeviceId?: string) => {
+    const sinkableAudio = audio as HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> };
+    if (!sinkableAudio.setSinkId || !outputDeviceId || outputDeviceId === "default") return;
+    try {
+      await sinkableAudio.setSinkId(outputDeviceId);
+    } catch (error) {
+      appendVoiceLog(`output device uygulanamadi: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [appendVoiceLog]);
 
   const createSpeakingAnalyser = useCallback((
     stream: MediaStream,
@@ -547,6 +569,8 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
 
   const handleSettingsChange = useCallback(async (newSettings: AudioSettings & { outputDeviceId?: string }) => {
     setAudioSettings(newSettings);
+    localStorage.setItem(AUDIO_SETTINGS_STORAGE_KEY, JSON.stringify(newSettings));
+    await Promise.all(Object.values(remoteAudiosRef.current).map((audio) => applyOutputDevice(audio, newSettings.outputDeviceId)));
     if (joinedVoiceChannel && localStreamRef.current) {
       const oldStream = localStreamRef.current;
       const newStream = await getLocalAudioStream(newSettings);
@@ -565,7 +589,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         stopMediaStream(oldStream);
       }
     }
-  }, [joinedVoiceChannel, isMuted, refreshLocalMicDebug, startLocalSpeakingAnalyser]);
+  }, [applyOutputDevice, joinedVoiceChannel, isMuted, refreshLocalMicDebug, startLocalSpeakingAnalyser]);
 
   const playSoundEffect = useCallback((type: 'join' | 'leave') => {
     try {
@@ -879,6 +903,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           document.body.appendChild(audio);
           remoteAudiosRef.current[targetId] = audio;
         }
+        void applyOutputDevice(remoteAudiosRef.current[targetId], audioSettings.outputDeviceId);
         const remoteStream = event.streams[0] ?? new MediaStream([event.track]);
         event.track.onmute = () => {
           appendVoiceLog(`${targetId}: remote track muted`);
@@ -1155,7 +1180,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       }
     });
 
-  }, [activeUsers, joinedVoiceChannel, cleanupPeer, db, userId, appendVoiceLog, attemptRemoteAudioPlay, setPeerStatus, syncPeerDebug, startRemoteSpeakingAnalyser, updatePeerDebug]);
+  }, [activeUsers, joinedVoiceChannel, cleanupPeer, db, userId, appendVoiceLog, applyOutputDevice, attemptRemoteAudioPlay, audioSettings.outputDeviceId, setPeerStatus, syncPeerDebug, startRemoteSpeakingAnalyser, updatePeerDebug]);
 
   useEffect(() => {
     if (!joinedVoiceChannel) return;
@@ -1338,6 +1363,15 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       return !current;
     });
   }, []);
+
+  const handleReconnectVoice = useCallback(() => {
+    if (!joinedVoiceChannel) return;
+    const channel = joinedVoiceChannel;
+    void (async () => {
+      await handleLeaveVoiceChannel();
+      await handleJoinVoiceChannel(channel);
+    })();
+  }, [handleJoinVoiceChannel, handleLeaveVoiceChannel, joinedVoiceChannel]);
 
   const channelDescription = activeView.type === "text"
     ? "Genel sohbet, duyurular ve ekip mesajlari"
@@ -1709,7 +1743,14 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         </div>
       )}
 
-      <AudioSettingsDialog isOpen={isSettingsOpen} onOpenChange={setIsSettingsOpen} settings={audioSettings} onSettingsChange={handleSettingsChange} />
+      <AudioSettingsDialog
+        isOpen={isSettingsOpen}
+        onOpenChange={setIsSettingsOpen}
+        settings={audioSettings}
+        onSettingsChange={handleSettingsChange}
+        onReconnectVoice={handleReconnectVoice}
+        isVoiceConnected={Boolean(joinedVoiceChannel)}
+      />
       <AdminPanel isOpen={isAdminPanelOpen} onOpenChange={setIsAdminPanelOpen} userRole={userRole} />
     </div>
   );
