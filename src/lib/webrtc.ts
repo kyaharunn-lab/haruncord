@@ -103,7 +103,8 @@ export const processAudioStream = (stream: MediaStream, settings: AudioSettings)
     let lastHighVolumeTime = 0;
     let consecutiveHighVolumeFrames = 0;
     
-    const threshold = 0.01 + (settings.micSensitivity * 0.2 * (settings.gateLevel ?? 1.0));
+    const sensitivity = Math.min(1, Math.max(0, settings.micSensitivity ?? 0.3));
+    const threshold = Math.max(0.012, (0.07 - sensitivity * 0.08) * (settings.gateLevel ?? 1.0));
     const releaseTime = 0.1 + ((settings.gateSmoothing ?? 0.5) * 0.9);
 
     const updateGate = () => {

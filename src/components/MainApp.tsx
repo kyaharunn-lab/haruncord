@@ -145,6 +145,53 @@ const STALE_PRESENCE_MS = 30000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const AUDIO_SETTINGS_STORAGE_KEY = "kanka_audio_settings";
 
+const qualityLabels: Record<ConnectionQuality, string> = {
+  excellent: "Mükemmel",
+  good: "İyi",
+  poor: "Zayıf",
+  reconnecting: "Yeniden bağlanıyor",
+};
+
+const peerStatusLabels: Record<PeerConnectionStatus, string> = {
+  new: "Yeni",
+  connecting: "Bağlanıyor",
+  connected: "Bağlandı",
+  disconnected: "Koptu",
+  failed: "Başarısız",
+  closed: "Kapalı",
+};
+
+const audioPlayStatusLabels: Record<NonNullable<PeerDebugInfo["audioPlayStatus"]>, string> = {
+  idle: "Beklemede",
+  playing: "Çalıyor",
+  blocked: "Engellendi",
+  failed: "Başarısız",
+};
+
+const permissionLabels: Record<LocalMicDebug["permission"], string> = {
+  granted: "İzin verildi",
+  denied: "Mikrofon izni reddedildi",
+  prompt: "İzin bekleniyor",
+  unknown: "Bilinmiyor",
+  pending: "Kontrol ediliyor",
+};
+
+const voiceStageLabels: Record<VoicePeerStage, string> = {
+  idle: "Beklemede",
+  "getting-mic": "Mikrofon alınıyor",
+  signaling: "Sinyalleşiyor",
+  "ice-connecting": "ICE bağlanıyor",
+  connected: "Bağlandı",
+  "audio-playing": "Ses çalıyor",
+  "mic-denied": "Mikrofon izni reddedildi",
+  "autoplay-blocked": "Otomatik oynatma engellendi",
+  "signaling-timeout": "Sinyal zaman aşımı",
+  "ice-failed": "ICE başarısız",
+  "turn-required": "TURN gerekli",
+  "remote-track-missing": "Uzak ses kanalı yok",
+  "rejoin-cleanup-failed": "Yeniden katılım temizliği başarısız",
+};
+
 export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) {
   const [activeView, setActiveView] = useState<{ type: 'text' | 'voice', id: string }>({ type: 'text', id: 'Genel' });
   const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<string | null>(null);
@@ -174,7 +221,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
-    micSensitivity: 0.03,
+    micSensitivity: 0.3,
     gateLevel: 0.5,
     gateSmoothing: 0.5,
     micGain: 1.0,
@@ -370,7 +417,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
     stopLocalSpeakingAnalyser();
     if (!stream) return;
     localAnalyserCleanupRef.current = createSpeakingAnalyser(stream, setIsSpeaking, {
-      threshold: Math.max(0.025, audioSettings.micSensitivity * 0.65),
+      threshold: Math.max(0.012, 0.06 - audioSettings.micSensitivity * 0.1),
       holdMs: 320,
     });
   }, [audioSettings.micSensitivity, createSpeakingAnalyser, stopLocalSpeakingAnalyser]);
@@ -767,16 +814,16 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       
       if (!stream) throw new Error("Mikrofon alınamadı");
       const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length === 0) throw new Error("Local audio track yok");
+      if (audioTracks.length === 0) throw new Error("Yerel ses kanalı yok");
       audioTracks.forEach((track) => {
         track.enabled = true;
         track.onended = () => {
           appendVoiceLog("local mic track ended");
-          refreshLocalMicDebug(localStreamRef.current, { lastError: "Local mic track ended" });
+          refreshLocalMicDebug(localStreamRef.current, { lastError: "Yerel mikrofon kanalı kapandı" });
         };
         track.onmute = () => {
           appendVoiceLog("local mic track muted");
-          refreshLocalMicDebug(localStreamRef.current, { lastError: "Local mic track muted" });
+          refreshLocalMicDebug(localStreamRef.current, { lastError: "Yerel mikrofon kanalı susturuldu" });
         };
         track.onunmute = () => {
           appendVoiceLog("local mic track unmuted");
@@ -798,7 +845,11 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         permission: error instanceof DOMException && error.name === "NotAllowedError" ? "denied" : prev.permission === "pending" ? "unknown" : prev.permission,
         lastError: error instanceof Error ? error.message : String(error),
       }));
-      toast({ variant: "destructive", title: "Hata", description: "Mikrofon erişimi sağlanamadı." });
+      toast({
+        variant: "destructive",
+        title: "Mikrofon izni reddedildi",
+        description: "Mikrofona erişilemedi. Tarayıcı izinlerini kontrol edip tekrar deneyin.",
+      });
     }
   }, [joinedVoiceChannel, handleLeaveVoiceChannel, audioSettings, db, userId, playSoundEffect, toast, cleanupStalePresence, appendVoiceLog, refreshLocalMicDebug, startLocalSpeakingAnalyser]);
 
@@ -865,7 +916,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           iceState: latestPc.iceConnectionState,
           signalingState: latestPc.signalingState,
           lastError: latest.offerSent || latest.offerReceived || latest.answerSent || latest.answerReceived
-            ? "15sn icinde baglanti/remote track gelmedi. Farkli internet/NAT icin TURN gerekebilir."
+            ? "15sn içinde bağlantı/uzak ses kanalı gelmedi. Farklı internet/NAT için TURN gerekebilir."
             : "15sn icinde signaling tamamlanmadi.",
         });
         appendVoiceLog(`${targetId}: 15sn timeout, TURN gerekebilir`);
@@ -891,7 +942,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         const peerState = peerStatesRef.current[targetId];
         if (!peerState || peerState.voiceSessionId !== voiceSessionIdRef.current) return;
         peerState.remoteTrackReceived = true;
-        appendVoiceLog(`${targetId}: remote track geldi (${event.track.kind})`);
+        appendVoiceLog(`${targetId}: uzak ses kanalı geldi (${event.track.kind})`);
         if (!remoteAudiosRef.current[targetId]) {
           const audio = document.createElement("audio");
           audio.autoplay = true;
@@ -906,16 +957,16 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
         void applyOutputDevice(remoteAudiosRef.current[targetId], audioSettings.outputDeviceId);
         const remoteStream = event.streams[0] ?? new MediaStream([event.track]);
         event.track.onmute = () => {
-          appendVoiceLog(`${targetId}: remote track muted`);
-          updatePeerDebug(targetId, { lastError: "Remote audio track muted" });
+          appendVoiceLog(`${targetId}: uzak ses kanalı susturuldu`);
+          updatePeerDebug(targetId, { lastError: "Uzak ses kanalı susturuldu" });
         };
         event.track.onunmute = () => {
-          appendVoiceLog(`${targetId}: remote track unmuted`);
+          appendVoiceLog(`${targetId}: uzak ses kanalı geri açıldı`);
           updatePeerDebug(targetId, { lastError: undefined });
         };
         event.track.onended = () => {
-          appendVoiceLog(`${targetId}: remote track ended`);
-          updatePeerDebug(targetId, { lastError: "Remote audio track ended" });
+          appendVoiceLog(`${targetId}: uzak ses kanalı kapandı`);
+          updatePeerDebug(targetId, { lastError: "Uzak ses kanalı kapandı" });
         };
         remoteAudiosRef.current[targetId].srcObject = remoteStream;
         startRemoteSpeakingAnalyser(targetId, remoteStream);
@@ -989,7 +1040,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           signalingState: pc.signalingState,
           iceState: pc.iceConnectionState,
           needsTurnHint: nextState === "failed" ? true : undefined,
-          lastError: nextState === "failed" ? "Peer connection failed. TURN gerekebilir." : undefined,
+          lastError: nextState === "failed" ? "Eş bağlantısı başarısız oldu. TURN gerekebilir." : undefined,
         });
         if (nextState === "disconnected" || nextState === "failed") {
           requestReconnect();
@@ -1003,7 +1054,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
           iceState: nextState,
           signalingState: pc.signalingState,
           needsTurnHint: nextState === "failed" ? true : undefined,
-          lastError: nextState === "failed" ? "ICE failed. STUN yeterli olmayabilir, TURN gerekebilir." : undefined,
+          lastError: nextState === "failed" ? "ICE başarısız oldu. STUN yeterli olmayabilir, TURN gerekebilir." : undefined,
         });
         if (nextState === "checking") setPeerStatus(targetId, "connecting");
         if (nextState === "connected" || nextState === "completed") setPeerStatus(targetId, "connected");
@@ -1434,7 +1485,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                 <div className="flex items-center gap-2">
                   <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-lg">{activeView.id}</h1>
                   <span className="hidden rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/55 sm:inline-flex">
-                    {activeView.type === "text" ? "Text" : "Voice"}
+                    {activeView.type === "text" ? "Metin" : "Ses"}
                   </span>
                 </div>
                 <p className="truncate text-xs text-white/45">{channelDescription}</p>
@@ -1450,7 +1501,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                   "bg-emerald-300"
                 )} />
                 <Wifi className="h-3.5 w-3.5" />
-                {joinedVoiceChannel ? channelQuality : "Online"}
+                {joinedVoiceChannel ? qualityLabels[channelQuality] : "Çevrimiçi"}
               </div>
               <Button variant="ghost" size="icon" className="hidden h-10 w-10 rounded-xl text-white/55 hover:bg-white/[0.07] hover:text-white sm:inline-flex">
                 <Search className="h-4 w-4" />
@@ -1464,7 +1515,7 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                     isVoiceDebugOpen && "border-indigo-400/40 bg-indigo-500/15 text-indigo-100"
                   )}
                   onClick={() => setIsVoiceDebugOpen((v) => !v)}
-                  aria-label="Voice debug"
+                  aria-label="Ses hata ayıklama"
                 >
                   <Bug className="w-4 h-4" />
                 </Button>
@@ -1572,13 +1623,13 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                       quality === "poor" ? "border-red-300/20 bg-red-400/10 text-red-200" :
                       "border-amber-300/20 bg-amber-400/10 text-amber-200"
                     )}>
-                      {quality}
+                      {qualityLabels[quality]}
                     </div>
                     <div className="absolute bottom-4 left-4 right-4 z-10 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/35 px-3 py-2.5 backdrop-blur-xl">
                       <div className="min-w-0">
                         <span className="block truncate text-sm font-semibold text-white">{u.displayName}</span>
                         <span className={cn("text-[11px]", userSpeaking ? "text-emerald-300" : "text-white/40")}>
-                          {userSpeaking ? "Konusuyor" : "Online"}
+                          {userSpeaking ? "Konuşuyor" : "Çevrimiçi"}
                         </span>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
@@ -1618,9 +1669,9 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
             <div className="min-w-0 px-2">
               <div className="flex items-center gap-2 text-xs font-semibold text-emerald-200">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.75)]" />
-                Live voice
+                Canlı ses
               </div>
-              <div className="mt-0.5 truncate text-[11px] text-white/42">{joinedVoiceChannel} · {channelQuality}</div>
+              <div className="mt-0.5 truncate text-[11px] text-white/42">{joinedVoiceChannel} · {qualityLabels[channelQuality]}</div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <Button
@@ -1685,16 +1736,16 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
       {isVoiceDebugOpen && (
         <div className="absolute bottom-4 right-4 z-30 w-80 max-w-[calc(100vw-2rem)] rounded-md border border-white/10 bg-[#1E1F22] p-3 text-xs shadow-xl">
           <div className="mb-3 flex items-center justify-between">
-            <div className="font-bold text-foreground">Voice Debug</div>
+            <div className="font-bold text-foreground">Ses Hata Ayıklama</div>
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setIsVoiceDebugOpen(false)}>
               <X className="h-3.5 w-3.5" />
             </Button>
           </div>
           <div className="mb-3 rounded bg-white/5 p-2 text-muted-foreground">
-            <div className="mb-1 font-semibold text-foreground">Local mic</div>
+            <div className="mb-1 font-semibold text-foreground">Yerel mikrofon</div>
             <div className="grid grid-cols-2 gap-1">
-              <span>permission</span><span className="text-right">{localMicDebug.permission}</span>
-              <span>tracks</span><span className="text-right">{localMicDebug.enabledCount}/{localMicDebug.trackCount}</span>
+              <span>izin</span><span className="text-right">{permissionLabels[localMicDebug.permission]}</span>
+              <span>kanallar</span><span className="text-right">{localMicDebug.enabledCount}/{localMicDebug.trackCount}</span>
             </div>
             {localMicDebug.lastError && <div className="mt-1 text-red-300">{localMicDebug.lastError}</div>}
           </div>
@@ -1710,21 +1761,21 @@ export function MainApp({ userName, userId, userRole, onLogout }: MainAppProps) 
                     info.status === "connected" ? "text-green-400" :
                     info.status === "failed" ? "text-red-400" :
                     info.status === "disconnected" ? "text-yellow-400" : "text-muted-foreground"
-                  )}>{info.status} ({info.attempts})</span>
+                  )}>{peerStatusLabels[info.status]} ({info.attempts})</span>
                 </div>
                 <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
                   <span>ice</span><span className="truncate text-right">{info.iceState ?? "-"}</span>
-                  <span>signaling</span><span className="truncate text-right">{info.signalingState ?? "-"}</span>
-                  <span>tracks</span><span className="text-right">{info.localTrackCount ?? 0}/{info.remoteTrackCount ?? 0}</span>
-                  <span>audio</span><span className="truncate text-right">{info.audioPlayStatus ?? "idle"}</span>
-                  <span>stage</span><span className="truncate text-right">{info.stage ?? "idle"}</span>
-                  <span>quality</span><span className="truncate text-right">{info.quality ?? "-"}</span>
-                  <span>offer</span><span className="text-right">{info.offerSent ? "sent" : "-"} / {info.offerReceived ? "recv" : "-"}</span>
-                  <span>answer</span><span className="text-right">{info.answerSent ? "sent" : "-"} / {info.answerReceived ? "recv" : "-"}</span>
-                  <span>ice count</span><span className="text-right">{info.iceSentCount ?? 0}/{info.iceReceivedCount ?? 0}</span>
-                  <span>remote track</span><span className="text-right">{info.remoteTrackReceived ? "yes" : "no"}</span>
-                  <span>audio el</span><span className="text-right">{info.audioElementExists ? "yes" : "no"}</span>
-                  <span>TURN</span><span className="text-right">{info.turnConfigured ? "configured" : "not configured"}</span>
+                  <span>sinyal</span><span className="truncate text-right">{info.signalingState ?? "-"}</span>
+                  <span>kanallar</span><span className="text-right">{info.localTrackCount ?? 0}/{info.remoteTrackCount ?? 0}</span>
+                  <span>ses</span><span className="truncate text-right">{audioPlayStatusLabels[info.audioPlayStatus ?? "idle"]}</span>
+                  <span>aşama</span><span className="truncate text-right">{info.stage ? voiceStageLabels[info.stage] : "Beklemede"}</span>
+                  <span>kalite</span><span className="truncate text-right">{info.quality ? qualityLabels[info.quality] : "-"}</span>
+                  <span>teklif</span><span className="text-right">{info.offerSent ? "gönderildi" : "-"} / {info.offerReceived ? "alındı" : "-"}</span>
+                  <span>yanıt</span><span className="text-right">{info.answerSent ? "gönderildi" : "-"} / {info.answerReceived ? "alındı" : "-"}</span>
+                  <span>ice sayısı</span><span className="text-right">{info.iceSentCount ?? 0}/{info.iceReceivedCount ?? 0}</span>
+                  <span>uzak kanal</span><span className="text-right">{info.remoteTrackReceived ? "evet" : "hayır"}</span>
+                  <span>ses öğesi</span><span className="text-right">{info.audioElementExists ? "evet" : "hayır"}</span>
+                  <span>TURN</span><span className="text-right">{info.turnConfigured ? "yapılandırıldı" : "yapılandırılmadı"}</span>
                 </div>
                 {info.needsTurnHint && (
                   <div className="mt-1 rounded border border-amber-400/20 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">

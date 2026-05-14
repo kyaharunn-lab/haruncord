@@ -36,6 +36,13 @@ import { UserRole } from '@/app/page';
 
 type ConnectionQuality = "excellent" | "good" | "poor" | "reconnecting";
 
+const qualityShortLabels: Record<ConnectionQuality, string> = {
+  excellent: "mük",
+  good: "iyi",
+  poor: "zayıf",
+  reconnecting: "yen",
+};
+
 interface RoomSidebarProps {
   className?: string;
   rooms: string[];
@@ -119,7 +126,7 @@ function ChannelUserList({ channelId, currentUserId, userRole, userVolumes, peer
                 quality === "poor" ? "bg-red-400/10 text-red-200" :
                 "bg-amber-400/10 text-amber-200"
               )}>
-                {quality === "excellent" ? "ex" : quality === "reconnecting" ? "rec" : quality}
+                {qualityShortLabels[quality]}
               </span>
               {u.isMuted && <MicOff className="w-3.5 h-3.5 text-red-300" />}
               {!isMe && (
@@ -165,7 +172,7 @@ export function RoomSidebar({
               </div>
               <div className="min-w-0">
                 <h2 className="truncate text-lg font-bold tracking-tight text-white">haruncord</h2>
-                <p className="truncate text-[11px] font-medium uppercase tracking-[0.18em] text-white/35">voice hub</p>
+                <p className="truncate text-[11px] font-medium uppercase tracking-[0.18em] text-white/35">ses merkezi</p>
               </div>
             </div>
             {isAdmin && (

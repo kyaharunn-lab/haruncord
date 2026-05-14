@@ -51,7 +51,7 @@ const DEFAULT_SETTINGS: AudioSettingsWithOutput = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
-  micSensitivity: 0.03,
+  micSensitivity: 0.3,
   gateLevel: 0.5,
   gateSmoothing: 0.5,
   micGain: 1.0,
@@ -62,6 +62,10 @@ const DEFAULT_SETTINGS: AudioSettingsWithOutput = {
 
 function getDeviceLabel(device: MediaDeviceInfo, fallback: string, index: number) {
   return device.label || `${fallback} ${index + 1}`;
+}
+
+function isPermissionDenied(error: unknown) {
+  return error instanceof DOMException && (error.name === "NotAllowedError" || error.name === "PermissionDeniedError");
 }
 
 export function AudioSettingsDialog({
@@ -76,6 +80,7 @@ export function AudioSettingsDialog({
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const [micLevel, setMicLevel] = useState(0);
   const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [isPermissionError, setIsPermissionError] = useState(false);
   const [activeSection, setActiveSection] = useState("voice");
   const previewStreamRef = useRef<MediaStream | null>(null);
   const previewAudioContextRef = useRef<AudioContext | null>(null);
@@ -83,7 +88,7 @@ export function AudioSettingsDialog({
 
   const selectedMicName = useMemo(() => {
     const device = microphones.find((mic) => mic.deviceId === settings.deviceId);
-    return device?.label || "Default microphone";
+    return device?.label || "Varsayılan mikrofon";
   }, [microphones, settings.deviceId]);
 
   const stopMicPreview = useCallback(() => {
@@ -102,16 +107,19 @@ export function AudioSettingsDialog({
 
   const refreshDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
-      setDeviceError("Bu tarayici medya cihazlarini listelemeyi desteklemiyor.");
+      setDeviceError("Bu tarayıcı medya cihazlarını listelemeyi desteklemiyor.");
+      setIsPermissionError(false);
       return;
     }
     try {
       setDeviceError(null);
+      setIsPermissionError(false);
       const devices = await navigator.mediaDevices.enumerateDevices();
       setMicrophones(devices.filter((device) => device.kind === "audioinput"));
       setSpeakers(devices.filter((device) => device.kind === "audiooutput"));
     } catch (error) {
       setDeviceError(error instanceof Error ? error.message : "Cihazlar listelenemedi.");
+      setIsPermissionError(isPermissionDenied(error));
     }
   }, []);
 
@@ -128,6 +136,8 @@ export function AudioSettingsDialog({
         },
       });
       previewStreamRef.current = stream;
+      setDeviceError(null);
+      setIsPermissionError(false);
       await refreshDevices();
 
       const AudioContextCtor =
@@ -156,7 +166,13 @@ export function AudioSettingsDialog({
       };
       tick();
     } catch (error) {
-      setDeviceError(error instanceof Error ? error.message : "Mikrofon testi baslatilamadi.");
+      if (isPermissionDenied(error)) {
+        setDeviceError("Mikrofon izni reddedildi. Ses ayarlarını kullanmak için tarayıcı izinlerinden mikrofona erişime izin verip tekrar deneyin.");
+        setIsPermissionError(true);
+      } else {
+        setDeviceError(error instanceof Error ? error.message : "Mikrofon testi başlatılamadı.");
+        setIsPermissionError(false);
+      }
     }
   }, [
     isOpen,
@@ -229,7 +245,8 @@ export function AudioSettingsDialog({
         void audioContext.close();
       };
     } catch (error) {
-      setDeviceError(error instanceof Error ? error.message : "Test sesi calinamadi.");
+      setDeviceError(error instanceof Error ? error.message : "Test sesi çalınamadı.");
+      setIsPermissionError(false);
     }
   };
 
@@ -239,14 +256,14 @@ export function AudioSettingsDialog({
         <div className="grid max-h-[92vh] grid-cols-1 overflow-hidden md:grid-cols-[210px_1fr]">
           <aside className="border-b border-white/10 bg-black/20 p-3 md:border-b-0 md:border-r">
             <DialogHeader className="mb-3 px-2 pt-2">
-              <DialogTitle className="text-xl font-bold tracking-tight">Voice Settings</DialogTitle>
-              <p className="text-xs text-white/42">Audio devices and voice processing</p>
+              <DialogTitle className="text-xl font-bold tracking-tight">Ses Ayarları</DialogTitle>
+              <p className="text-xs text-white/42">Ses cihazları ve mikrofon iyileştirme</p>
             </DialogHeader>
             <div className="grid grid-cols-3 gap-2 md:grid-cols-1">
               {[
-                { id: "voice", label: "Voice", icon: Mic },
-                { id: "devices", label: "Devices", icon: Headphones },
-                { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
+                { id: "voice", label: "Ses", icon: Mic },
+                { id: "devices", label: "Cihazlar", icon: Headphones },
+                { id: "advanced", label: "Gelişmiş", icon: SlidersHorizontal },
               ].map((item) => {
                 const Icon = item.icon;
                 return (
@@ -269,8 +286,19 @@ export function AudioSettingsDialog({
 
           <div className="max-h-[92vh] overflow-y-auto p-4 sm:p-6">
             {deviceError && (
-              <div className="mb-4 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                {deviceError}
+              <div className="mb-4 flex flex-col gap-3 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-100 sm:flex-row sm:items-center sm:justify-between">
+                <span>{deviceError}</span>
+                {isPermissionError && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 border-red-200/20 bg-red-200/10 text-red-50 hover:bg-red-200/20"
+                    onClick={() => void startMicPreview()}
+                  >
+                    Tekrar dene
+                  </Button>
+                )}
               </div>
             )}
 
@@ -279,7 +307,7 @@ export function AudioSettingsDialog({
                 <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
-                      <Label className="text-sm font-semibold text-white">Mic test</Label>
+                      <Label className="text-sm font-semibold text-white">Mikrofon testi</Label>
                       <p className="mt-1 text-xs text-white/42">{selectedMicName}</p>
                     </div>
                     <Radio className="h-5 w-5 text-emerald-300" />
@@ -305,8 +333,8 @@ export function AudioSettingsDialog({
                 <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                   <div className="mb-3 flex justify-between">
                     <div>
-                      <Label className="text-sm font-semibold text-white">Voice activity sensitivity</Label>
-                      <p className="mt-1 text-xs text-white/42">Lower values detect quieter speech.</p>
+                      <Label className="text-sm font-semibold text-white">Ses algılama hassasiyeti</Label>
+                      <p className="mt-1 text-xs text-white/42">Daha yüksek değerler daha sessiz konuşmaları algılar.</p>
                     </div>
                     <span className="rounded-full bg-white/10 px-2 py-1 text-xs text-white/60">
                       {Math.round(settings.micSensitivity * 100)}%
@@ -323,7 +351,7 @@ export function AudioSettingsDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Button onClick={handleTestSound} className="h-11 gap-2 rounded-xl bg-indigo-500 hover:bg-indigo-400">
                     <Volume2 className="h-4 w-4" />
-                    Test sound
+                    Test sesi çal
                   </Button>
                   <Button
                     variant="outline"
@@ -332,7 +360,7 @@ export function AudioSettingsDialog({
                     className="h-11 gap-2 rounded-xl border-white/10 bg-white/[0.04] text-white hover:bg-white/[0.08]"
                   >
                     <RefreshCcw className="h-4 w-4" />
-                    Reconnect voice
+                    Sese yeniden bağlan
                   </Button>
                 </div>
               </section>
@@ -341,16 +369,16 @@ export function AudioSettingsDialog({
             {activeSection === "devices" && (
               <section className="space-y-5">
                 <div className="space-y-2">
-                  <Label className="text-sm font-semibold text-white">Input device</Label>
+                  <Label className="text-sm font-semibold text-white">Giriş cihazı</Label>
                   <Select value={settings.deviceId || "default"} onValueChange={(value) => updateSetting("deviceId", value)}>
                     <SelectTrigger className="h-11 rounded-xl border-white/10 bg-white/[0.04] text-white">
-                      <SelectValue placeholder="Select microphone" />
+                      <SelectValue placeholder="Mikrofon seç" />
                     </SelectTrigger>
                     <SelectContent className="border-white/10 bg-[#17151f] text-white">
-                      <SelectItem value="default">Default microphone</SelectItem>
+                      <SelectItem value="default">Varsayılan mikrofon</SelectItem>
                       {microphones.filter((mic) => mic.deviceId).map((mic, index) => (
                         <SelectItem key={mic.deviceId} value={mic.deviceId}>
-                          {getDeviceLabel(mic, "Microphone", index)}
+                          {getDeviceLabel(mic, "Mikrofon", index)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -358,21 +386,21 @@ export function AudioSettingsDialog({
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-sm font-semibold text-white">Output device</Label>
+                  <Label className="text-sm font-semibold text-white">Çıkış cihazı</Label>
                   <Select value={settings.outputDeviceId || "default"} onValueChange={(value) => updateSetting("outputDeviceId", value)}>
                     <SelectTrigger className="h-11 rounded-xl border-white/10 bg-white/[0.04] text-white">
-                      <SelectValue placeholder="Select output" />
+                      <SelectValue placeholder="Çıkış seç" />
                     </SelectTrigger>
                     <SelectContent className="border-white/10 bg-[#17151f] text-white">
-                      <SelectItem value="default">Default output</SelectItem>
+                      <SelectItem value="default">Varsayılan çıkış</SelectItem>
                       {speakers.filter((speaker) => speaker.deviceId).map((speaker, index) => (
                         <SelectItem key={speaker.deviceId} value={speaker.deviceId}>
-                          {getDeviceLabel(speaker, "Speaker", index)}
+                          {getDeviceLabel(speaker, "Hoparlör", index)}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-white/38">Output switching is supported in Chromium browsers via setSinkId.</p>
+                  <p className="text-xs text-white/38">Çıkış değiştirme Chromium tarayıcılarda setSinkId ile desteklenir.</p>
                 </div>
               </section>
             )}
@@ -386,23 +414,23 @@ export function AudioSettingsDialog({
                   <TabsList className="grid h-12 w-full grid-cols-3 rounded-xl bg-white/[0.05]">
                     <TabsTrigger value="low-latency" className="gap-2 rounded-lg text-xs">
                       <Zap className="h-3.5 w-3.5" />
-                      Fast
+                      Hızlı
                     </TabsTrigger>
                     <TabsTrigger value="balanced" className="gap-2 rounded-lg text-xs">
                       <Waves className="h-3.5 w-3.5" />
-                      Balanced
+                      Dengeli
                     </TabsTrigger>
                     <TabsTrigger value="high-quality" className="gap-2 rounded-lg text-xs">
                       <Speaker className="h-3.5 w-3.5" />
-                      Quality
+                      Kalite
                     </TabsTrigger>
                   </TabsList>
                 </Tabs>
 
                 {[
-                  ["noiseSuppression", "Noise suppression", "Reduce background noise."] as const,
-                  ["echoCancellation", "Echo cancellation", "Prevent feedback and echo."] as const,
-                  ["autoGainControl", "Auto gain control", "Automatically balance microphone loudness."] as const,
+                  ["noiseSuppression", "Gürültü azaltma", "Arka plan gürültüsünü daha güçlü bastırır."] as const,
+                  ["echoCancellation", "Yankı engelleme", "Geri besleme ve yankıyı engeller."] as const,
+                  ["autoGainControl", "Otomatik ses dengeleme", "Mikrofon ses yüksekliğini otomatik dengeler."] as const,
                 ].map(([key, title, description]) => (
                   <div key={key} className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                     <div>
@@ -415,7 +443,7 @@ export function AudioSettingsDialog({
 
                 <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                   <div className="mb-3 flex justify-between">
-                    <Label className="text-sm font-semibold text-white">Mic gain</Label>
+                    <Label className="text-sm font-semibold text-white">Mikrofon kazancı</Label>
                     <span className="text-xs text-white/55">{Math.round((settings.micGain ?? 1) * 10) / 10}x</span>
                   </div>
                   <Slider
@@ -431,10 +459,10 @@ export function AudioSettingsDialog({
             <div className="mt-6 flex justify-between border-t border-white/10 pt-4">
               <Button variant="ghost" className="gap-2 text-white/55 hover:bg-white/[0.06] hover:text-white" onClick={handleReset}>
                 <RotateCcw className="h-4 w-4" />
-                Reset
+                Sıfırla
               </Button>
               <Button className="rounded-xl bg-white text-[#111019] hover:bg-white/90" onClick={() => onOpenChange(false)}>
-                Done
+                Tamam
               </Button>
             </div>
           </div>
